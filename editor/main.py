@@ -46,6 +46,7 @@ except:
     default_content = ""
 
 with st.sidebar:
+    
     filetree, setup_section, md_ref = st.tabs(["명세서 리스트", "편집기 세팅", "가이드"])
     with filetree:
         files = [f for f in os.listdir("../data/specs") if f.endswith(".md")]
@@ -88,10 +89,60 @@ st.markdown(
         border-radius: 5px;
         color: white !important;
         padding: 10px;
+        font-size: 23pt;
     }
+    h2 {
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-radius: 5px;
+        color: #ffffff !important;
+        padding: 8px;
+        font-size: 20pt;
+    }
+    h3 {
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-radius: 5px;
+        color: #ffffff !important;
+        padding: 8px;
+        font-size: 17pt;
+    }
+
+    p {
+        font-size: 14pt;
+        line-height: 1.6;
+        color: #ffffff;
+    }
+
     pre {
         background-color: #111111 !important;
     }
+
+    li {
+        font-size: 12pt;
+        line-height: 1.4;
+        color: #ffffff;
+        margin-bottom: 4px;
+    }
+    code {
+        background-color: #2a2a2a;
+        color: #e6e6e6;
+        padding: 0px 3px;
+        border-radius: 3px;
+        font-family: 'Fira Code', 'Consolas', monospace;
+        font-size: 0.9em;
+        font-weight: 500;
+        letter-spacing: 0.5px;
+        border: 1px solid #444;
+        box-shadow: 0 1px 1px rgba(0,0,0,0.1);
+        transition: all 0.2s ease;
+    }
+
+    code:hover {
+        background-color: #333;
+        border-color: #555;
+        box-shadow: 0 2px 2px rgba(0,0,0,0.15);
+    }
+
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -124,7 +175,7 @@ with c1:
     )
     
     if st.button("Save Current Status"):
-        save_cur_state(markdown_code=markdown_text, file_name = "dd.md")
+        save_cur_state(markdown_code=markdown_text, file_name = target_table)
     
 
 

@@ -1,10 +1,11 @@
 import requests
 import os
 import sys
+print(os.getcwd())
 from notion_client import Client
 from markdown_it import MarkdownIt
-from parser_utils import get_heading, get_text_block, get_divider_block 
-from table_generator import TableGenerator
+from gedi_wev.utils.parser_utils import get_heading, get_text_block, get_divider_block 
+from gedi_wev.utils.table_generator import TableGenerator
 import pandas as pd
 
 
