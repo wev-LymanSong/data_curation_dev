@@ -11,7 +11,7 @@ print(f"Current Directory: {os.getcwd()}")
 
 TARGET_FIELD =  'we_mart'
 TARGET_DB =     'we_mart'
-TARGET_TABLE =  'wv_media'
+TARGET_TABLE =  'wv_'
 md = MarkdownIt()
 
 gc_databricks = GithubConnector(github_token=os.environ['GITHUB_TOKEN'], repo_name= 'databricks', branch='main')

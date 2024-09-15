@@ -5,6 +5,16 @@ import time
 import pyautogui
 ## https://discuss.streamlit.io/t/web-markdown-editor/64329
 
+@st.dialog("Save Markdown file as")
+def save_cur_state(markdown_code, file_name):
+    st.write(f"Current File name: {file_name}")
+    if st.button("Save"):
+        with open(f"../data/specs/{file_name}", "w", encoding='utf-8') as f:
+            cleaned_content = '\n'.join(line.rstrip() for line in markdown_code.splitlines())
+            file = f.write(cleaned_content)
+            st.write("Saved")
+
+
 st.set_page_config(page_title="테이블 명세서 편집기", layout="wide", page_icon="💡")
 markdown_garammar = """
 | 요소 예시 | 문법                             |
@@ -47,8 +57,11 @@ with st.sidebar:
         with open(f"../data/specs/{target_table}", "rb") as f:
             file = f.read().decode('utf-8')
         default_content = file
-
-    
+        
+        on = st.toggle(label = 'See the raw code')
+        if on:
+            st.code(default_content, language="markdown")
+        
     with setup_section:
         st.subheader(":blue[편집기 파라미터 세팅]", divider = 'grey')
         theme = st.selectbox("Theme", options=THEMES, index=35)
@@ -87,6 +100,13 @@ st.markdown(
 # 왼쪽 열을 사용하여 사용자가 입력한 마크다운 텍스트 가져오기
 with c1:
     st.header(":blue[Markdown Editor]", divider="gray")
+    st.markdown("""
+    <style>
+    div.stButton > button:first-child {
+        float: right;
+    }
+    </style>""", unsafe_allow_html=True)
+    
     markdown_text = st_ace(
         value=default_content,
         placeholder="명세서 입력",
@@ -102,6 +122,10 @@ with c1:
         min_lines=45,
         key="ace",
     )
+    
+    if st.button("Save Current Status"):
+        save_cur_state(markdown_code=markdown_text, file_name = "dd.md")
+    
 
 
 with c2:

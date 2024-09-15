@@ -1,0 +1,700 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,## wv_ord
+2,md,,basic_info,"#### Basic Info
+* Weverse 인앱 결제와 젤리 결제 + 위버스샵 미디어 컨텐츠 결제 관련 마트
+* Mart Primary 
+* DAILY OVERWRITE
+* WIKI : [https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/2856944593/we+mart.wv+order] 
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2021-10-25 |송재영|마트생성/배치생성|
+|2021-11-18|송재영|로직 변경|
+|2021-12-02|송재영|로직 변경|
+|2021-12-08|송재영|로직 변경|
+|2022-01-03|송재영|로직 변경|
+|2022-01-18|송재영|ods_wv 테이블로 변경|
+|2022-03-17|송재영|we_mart.wv_media에서 가격 가져오게 변경|
+|2022-03-30|송재영|취소 분 데이터 정합성 이슈로 로직 변경|
+|2022-07-18|송재영|weverse2로 소스 변경|
+|2022-07-27|송재영|weverseshop 결제 건도 포함(wv_video_play에서 유저별 권한 판단을 위해)|
+|2022-11-23|송재영|source 변경(service_log.inapp_log => billing.purchase) & 스키마 변경|
+|2023-04-27|송재영|젤리 결제 추가|
+|2023-05-08|송재영|코드 & 로직 최적화|
+|2023-05-23|송재영|WS 결제분 보강, pay_system와 pay_method는 we_digital_product를 따르는 것으로 수정|
+|2023-07-24|송재영|purchase_id 필드 추가|
+|2023-09-20|송재영|젤리 결제 때 wallet_type 없이 가져오기|
+|2023-11-09|송재영|dur_unit, promotion_unit 컬럼 추가|
+|2023-11-16|송재영|jelly의 PARTIAL_WITHDRAW 거래를 취소(CX)로 추가, 컬럼 명 & 순서 변경|
+|2024-01-18|송재영|jelly의 PARTIAL_WITHDRAW 이후 스토어 환불로 WITHDRAW되는 경우 발생, JELLY PURCHASES 건들에서 CX 부분에 집계함수 적용으로 대응([관련 쓰레드](https://benxcorp.slack.com/archives/C03HXCA75KJ/p1705561008846259))|
+|2024-03-20|송재영|FC shop 구분에 의한 로직 변경|
+|2024-06-29|송재영|인앱 구독 젤리들 가격 고정 적용(~6/28 15:00) => 24/07/01에 삭제|
+|2024-07-03|송재영|we_user_compact => we_user로 변경|
+
+
+###### Source Tables
+* billing.purchase
+* billing.in_app_purchase
+* jelly.transaction
+* jelly.ledger
+* jelly.order_item
+* weverse2.community_member_purchase
+* we_meta.currency_rate
+* we_mart.we_jelly_charge
+* we_mart.ws_fc_user_history
+* we_mart.wv_user_ctry_history
+* we_mart.we_user
+* we_mart_wv1.wv_order_with_sale_id
+* we_meta.we_media_product
+* we_meta.we_digital_product"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"from pyspark.sql import functions as F
+
+key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"")
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'wv_order', 
+  'service' : 'weverse',  #default (None)
+}
+
+option = {
+      'date' : None, 
+      'format':'delta', #default (delta)
+      'mode': 'overwrite', #default (append)
+      'period': 'daily', #default (daily)
+      'noti' : True, #default (True) 
+      #'delete': True, #default (False)
+      #'delete_key': 'transaction_id' #default (None)
+    }"
+6,md ,,etc, #### Queries
+7,md,,just_heading,##### Shared Additional Temp Data Tables
+8,py,FX(Currency Exchage rate),code,"spark.sql(""""""
+create or replace temp view FX as
+select 
+currency_code
+, currency_rate
+, date_id
+, next_date_id
+from we_meta.currency_rate
+"""""""
+9,py,FC(Membership Info),code,"ark.sql(""""""
+create or replace temp view FC as
+select distinct
+ord_sheet_num
+, we_member_id
+, we_art_id
+, fc_id
+, shop
+, min(create_dt) as create_dt
+, min(expire_dt) as expire_dt
+from we_mart.ws_fc_user_history 
+where 1=1
+and is_cx_by_restore = 0 -- 수기 복구로 취소된 멤버십은 중복 집계 방지를 위해 제거
+and ord_status not in ('PAYMENT_FAILED')
+group by 1,2,3,4,5
+"""""""
+10,py,CTRY(Weverse User Country;Access IP base),code,"park.sql(""""""
+create or replace temp view CTRY as
+select distinct
+user_id
+, country
+, ip
+, date(created_at) as date_id
+, date(nvl(lead(created_at) over (partition by user_id, member_id order by created_at), '2099-12-31 23:59:59')) as next_created_at 
+, row_number() over(partition by user_id, date(created_at) order by created_at desc) as seq
+from (select distinct * from we_mart.wv_user_ctry_history)
+"""""""
+11,md,,description,"##### Inapp Purchases and Weverse Shop
+* Exclude Jelly Products"
+12,py,,code,"df = spark.sql(f""""""
+with tmp as (
+  select
+  *
+  , case when subscription = false then timestamp(purchase_at_ms/1000) + interval 9 hours
+    else 
+         case when market = 'PLAYSTORE' then (timestamp(expire_at_ms/1000) + interval 9 hours) - interval 1 month
+         else timestamp(purchase_at_ms/1000) + interval 9 hours 
+         end
+    end as pur_confirmed_dt
+  from (
+    select 
+    case when market = 'WEVERSE_SHOP' then updated_at
+    else timestamp(from_unixtime(status_update_at_ms/1000)) + interval 9 hours end as status_updated_at
+    , *
+    from billing.purchase
+  )
+  where expire_at_ms != -1
+  and system in ('INAPP', 'WEVERSE_SHOP')
+  and shop_id = 'weverse'
+)
+select a.* except(market)
+, case when market = 'PLAYSTORE' then 'GOOGLE_PLAYSTORE'
+       when market = 'APPSTORE' then 'APPLE_APPSTORE' 
+       else market end as market
+, sale_id
+from tmp as a
+left join weverseshop.order_sheet as b
+on a.purchase_id = b.order_sheet_number
+left join weverseshop.order_item as c
+on b.order_sheet_id = c.order_sheet_id
+where 1=1
+and date(pur_confirmed_dt) between '2022-07-18' and '{key}'
+and a.user_id != a.product_id -- 빌링 팀에서 실수로 잘못 넣은 데이터 195건
+and product_id not in ( -- 젤리 product_id 는 제외
+  select distinct product_id 
+  from jelly.point
+)
+""""""
+)
+
+df.createOrReplaceTempView(""inapp_orders_pre"")"
+13,py,,code,"df = spark.sql(f""""""
+create or replace temp view inapp_shop_orders as
+
+
+/* 
+WEV1 and SHOP ORDERS: TVOD, SVOD
+from initial date to 2022-07-18
+*/
+select 
+  
+  PT.we_member_id
+, PT.wv_user_id
+
+, 1 as is_pay
+, PT.pur_confirmed_dt as pay_dt
+, case when PT.pur_cx_dt is not null then 1 else 0 end as is_cx
+, case when PT.pur_cx_dt is not null then 0 else null end as is_partial_cx
+, null as is_cx_to_jelly_refund
+, PT.pur_cx_dt as cx_dt
+, PT.transaction_id
+, PT.purchase_id
+, PT.status as ord_status
+
+, MPROD.vod_type as product_type
+, MPROD.product_id_int as product_id
+, 1 as is_media_product
+, MPROD.we_art_id
+, MPROD.we_art_name
+, PT.title as product_name
+, PT.dur_type
+, null as dur_unit
+, null as dur_value
+, null as promotion_type
+, null as promotion_unit
+, null as promotion_value
+, PPO.store_item_id
+, PT.paid_item_id
+, MPROD.cp_code
+, MPROD.sale_start_dt
+
+, PT.started_dt
+, PT.ended_dt
+, case when PT.market in ('GOOGLE_PLAYSTORE', 'APPLE_APPSTORE') then 'INAPP' else 'PG' end as pay_system
+, PT.market as pay_method
+, PT.sale_id
+, MPROD.currency_code as sale_currency_code
+, MPROD.sale_price
+, PT.qty as ord_item_qty
+, case when PT.pur_cx_dt is not null then PT.qty end as cx_item_qty
+
+, PT.paid_currency_code as currency_code
+
+, PT.paid_price as paid_amt
+, PT.paid_price_krw as paid_amt_krw
+, null as paid_amt_krw_inner
+
+, case when PT.pur_cx_dt is not null then PT.paid_price end as cx_amt
+, case when PT.pur_cx_dt is not null then PT.paid_price_krw end as cx_amt_krw
+, null as cx_amt_krw_inner
+
+from we_mart_wv1.wv_order_with_sale_id as PT
+left join (
+  select distinct product_id_int, paid_item_id, we_art_id, we_art_name, cp_code, vod_type
+  , sale_price, currency_code, sale_start_dt
+  from we_meta.we_media_product
+  where part_date = '2022-07-17'
+  and product_type = 'PACKAGE' 
+  and pay_system = 'INAPP'
+  and paid_item_id is not null
+) as MPROD
+on PT.paid_item_id = MPROD.paid_item_id
+left join billing.in_app_purchase as PURCHASE
+on PT.market != 'WEVERSE_SHOP' and PT.transaction_id = PURCHASE.transaction_id
+left join product.product_payment_option as PPO
+on PT.paid_item_id = PPO.paid_item_id and PPO.payment_method = case when PT.market in ('GOOGLE_PLAYSTORE', 'APPLE_APPSTORE') then 'INAPP' else 'WS' end
+
+union all
+
+/* 
+WEV 2 and SHOP ORDERS: TVOD(inapp purchase up to 2023-04-27), SVOD
+from 2022-07-18 to current date
+*/
+select 
+
+  ORD.user_id as we_member_id
+, USER.wv_user_id
+
+, 1 as is_pay
+, ORD.pur_confirmed_dt as pay_dt
+, case when ORD.cancel_at_ms > 0 then 1 else 0 end as is_cx
+, case when ORD.cancel_at_ms > 0 then 0 else null end as is_partial_cx
+, null as is_cx_to_jelly_refund
+, case when ORD.cancel_at_ms > 0 then timestamp(ORD.cancel_at_ms/1000) + interval 9 hours else null end as cx_dt
+, nvl(ORD.transaction_id, ORD.purchase_id) as transaction_id
+, ORD.purchase_id
+, ORD.status as ord_status
+
+, DPROD.product_type
+, DPROD.product_id
+, DPROD.is_media_product
+, DPROD.we_art_id
+, DPROD.we_art_name
+, MPROD.product_name
+, DPROD.dur_type
+, DPROD.dur_unit
+, DPROD.dur_value
+, DPROD.promotion_type
+, DPROD.promotion_unit
+, DPROD.promotion_value
+, DPROD.store_item_id
+, DPROD.paid_item_id
+, MPROD.cp_code
+, DPROD.sale_start_dt
+
+, timestamp(ORD.purchase_at_ms/1000) + interval 9 hours as started_dt
+, timestamp(ORD.expire_at_ms/1000) + interval 9 hours as ended_dt
+, DPROD.pay_system
+, DPROD.pay_method
+, ORD.sale_id
+, DPROD.currency_code as sale_currency_code
+, DPROD.sale_price
+
+, ORD.quantity as ord_item_qty
+, case when ORD.cancel_at_ms > 0 then ORD.quantity end as cx_item_qty
+
+, ORD.currency_code as currency_code
+
+, double(total_price) as paid_amt
+, double(MPROD.sale_price * case when MPROD.currency_code in ('KRW', ""JELLY"") then 1 else FX.currency_rate end) as paid_amt_krw
+, null as paid_amt_krw_inner
+
+, case when ORD.cancel_at_ms > 0 then double(total_price) else null end as cx_amt
+, case when ORD.cancel_at_ms > 0 then double(MPROD.sale_price * case when MPROD.currency_code in ('KRW', ""JELLY"") then 1 else FX.currency_rate end) else null end as cx_amt_krw
+, null as cx_amt_krw_inner
+
+from inapp_orders_pre as ORD
+inner join we_meta.we_media_product as MPROD
+on ORD.product_id = MPROD.media_product_id 
+and date(ORD.pur_confirmed_dt) = MPROD.part_date
+and MPROD.product_type != 'COUPON' 
+and case when ORD.market != 'WEVERSE_SHOP' then ORD.market = MPROD.pay_method else ORD.sale_id = MPROD.sale_id end
+and case when ORD.market != 'WEVERSE_SHOP' then ORD.store_item_id = MPROD.store_item_id else 1=1 end
+left join we_meta.we_digital_product as DPROD
+on ORD.product_id = DPROD.product_id 
+and DPROD.data_source = 'PRODUCT' and DPROD.part_date = '{key}' and DPROD.is_media_product = 1
+and case when ORD.market != 'WEVERSE_SHOP' then ORD.market = DPROD.pay_method else ORD.sale_id = DPROD.sale_id end
+and case when ORD.market != 'WEVERSE_SHOP' then ORD.store_item_id = DPROD.store_item_id else 1=1 end
+left join we_mart.we_user as USER
+on ORD.user_id = USER.we_member_id and USER.part_date = '{key}'
+left join FX
+on FX.currency_code = DPROD.currency_code and date(ORD.pur_confirmed_dt) >= date(FX.date_id) and date(ORD.pur_confirmed_dt) < date(FX.next_date_id)
+""""""
+)
+
+spark.sql(""""""
+select *
+from (
+  select distinct *
+  , rank() over (partition by transaction_id order by pay_dt desc, we_member_id desc) as rank
+  from inapp_shop_orders 
+)
+where rank = 1
+"""""").createOrReplaceTempView('INAPP_SHOP_ORDERS')"
+14,md,,just_heading,##### Jelly Purchases
+15,py,,code,"df = spark.sql(f""""""
+with jelly_orders as (
+  select 
+  -- USER INFO
+    bigint(TRX.user_id) as we_member_id
+  , USER.wv_user_id
+
+  -- TANSACTION DATA
+  , 1 as is_pay
+  , LDG.pay_dt + interval 9 hours as pay_dt
+  , case when WDRAW.withdraw_id is not null then 1 else 0 end as is_cx
+  , is_partial_cx
+  , case when WDRAW.withdraw_id is null then null 
+        when WDRAW.refund_id is not null then 1 
+    else 0 end as is_cx_to_jelly_refund
+  , WDRAW.withdraw_dt + interval 9 hours as cx_dt
+  , TRX.transaction_id
+  , TRX.transaction_id as purchase_id -- transaction_id(order_id)와 같으나 wv_order 컬럼에 값을 채우기 위해 또 넣어줌
+  , case when WDRAW.withdraw_id is null then 'PAYMENT_COMPLETED' else 'PAYMENT_CANCELED' end as ord_status
+
+  -- PRODUCT META DATA
+  , DPROD.product_type
+  , DPROD.product_id
+  , DPROD.is_media_product
+  , DPROD.we_art_id
+  , DPROD.we_art_name
+  , DPROD.product_name
+  , DPROD.dur_type
+  , DPROD.dur_unit
+  , DPROD.dur_value
+  , DPROD.promotion_type
+  , DPROD.promotion_unit
+  , DPROD.promotion_value
+  , nvl(DPROD.store_item_id, ORD.store_item_id) as store_item_id
+  , DPROD.paid_item_id
+  , MPROD.cp_code
+  , DPROD.sale_start_dt
+
+  -- ORDER/PURCHASE DATA
+  , PRIV.start_at as started_dt
+  , PRIV.end_at as ended_dt
+  , DPROD.pay_system as pay_system
+  , DPROD.pay_method as pay_method
+  , null as sale_id
+  , DPROD.currency_code as sale_currency_code
+  , DPROD.sale_price
+
+  , ORD.quantity as ord_item_qty
+  , case when WDRAW.withdraw_id is not null then ORD.quantity end as cx_item_qty
+
+  , 'JELLY' as currency_code
+
+  , TRX.point as paid_amt
+  
+  -- 한달간 WDM 인앱 구독 상품 프로모션 해당 상품들은 젤리 가격은 15젤리이나 한화 결제 가격은 2200원으로 고정 (~6/28 15:00 까지)
+  , double(LDG.paid_sell_price_amt) as paid_amt_krw
+  , double(LDG.paid_unit_price_amt) as paid_amt_krw_inner
+
+  , WDRAW.cx_jelly_amt as cx_amt
+  , double(WDRAW.cx_sell_price_amt) as cx_amt_krw
+  , double(WDRAW.cx_unit_price_amt) as cx_amt_krw_inner
+
+  from (
+      select transaction_id, user_id, transaction_type
+      , date(timestamp(create_at_ms/1000) + interval 9 hours) as trx_cre_date
+      , timestamp(create_at_ms/1000) + interval 9 hours as trx_cre_dt
+      , sum(point) as point
+      from jelly.transaction
+      group by 1, 2, 3, 4, 5
+  ) as TRX
+  left join jelly.order_item as ORD
+  on TRX.transaction_id = ORD.order_id
+  left join we_mart.we_user as USER
+  on TRX.user_id = USER.we_member_id and USER.part_date = '{key}'
+  inner join we_meta.we_digital_product as DPROD
+  on ORD.product_id = DPROD.product_id and ORD.store_item_id = DPROD.store_item_id and DPROD.pay_system = 'JELLY' and TRX.trx_cre_date = DPROD.part_date
+  left join we_meta.we_media_product as MPROD
+  on ORD.product_id = MPROD.media_product_id and ORD.store_item_id = MPROD.store_item_id and MPROD.pay_method = 'JELLY' and TRX.trx_cre_date = MPROD.part_date
+  left join (
+    select LDG.transaction_id as order_id
+    , timestamp(from_unixtime(LDG.create_at_ms/1000)) as pay_dt
+    , sum(LDG.outcome) as paid_jelly_amt
+    , sum(LDG.outcome * CHR.jelly_unit_price) as paid_unit_price_amt
+    , sum(LDG.outcome * CHR.jelly_selling_unit_price) as paid_sell_price_amt
+    from jelly.ledger as LDG
+    left join we_mart.we_jelly_charge as CHR
+    on LDG.charge_id = CHR.charge_id
+    where 1=1
+    and LDG.transaction_type in ('ORDER')
+    group by 1, 2
+  ) as LDG
+  on TRX.transaction_id = LDG.order_id
+  left join (
+    select LDG.transaction_id as withdraw_id
+    , TRX.refund_id
+    , timestamp(from_unixtime(TRX.create_at_ms/1000)) as withdraw_dt
+    , case when LDG.transaction_type = 'WITHDRAW' then 0 else 1 end as is_partial_cx
+    , sum(LDG.income) as cx_jelly_amt
+    , sum(LDG.income*CHR.jelly_unit_price) as cx_unit_price_amt
+    , sum(LDG.income*CHR.jelly_selling_unit_price) as cx_sell_price_amt
+    from wev_prod.jelly.ledger as LDG
+    left join wev_prod.jelly.transaction as TRX
+    on LDG.transaction_id = TRX.transaction_id and TRX.transaction_type = LDG.transaction_type and TRX.transaction_type in ('WITHDRAW', 'PARTIAL_WITHDRAW')
+    left join wev_prod.we_mart.we_jelly_charge as CHR
+    on LDG.charge_id = CHR.charge_id
+    where LDG.transaction_type in ('WITHDRAW', 'PARTIAL_WITHDRAW')
+    group by 1, 2, 3, 4
+  ) as WDRAW
+  on LDG.order_id = WDRAW.withdraw_id 
+  left join (
+    select id as wv_user_id
+    , product_type
+    , regexp_extract(product_id, '\\D+', 0) as product_id_prefix
+    , int(regexp_extract(product_id, '\\d+', 0)) as product_id
+    , purchase_id
+    , timestamp(start_at/1000) + interval 9 hours as start_at
+    , timestamp(end_at/1000) + interval 9 hours as end_at
+    from weverse2.community_member_purchase
+  ) as PRIV -- content use privilege
+  on ORD.order_id = PRIV.purchase_id
+  where 1=1
+  and TRX.transaction_type in ('ORDER')
+  and TRX.trx_cre_date >= '2023-04-27' -- JELLY 로 컨텐츠 첫 결제한 날짜 고정
+  and TRX.trx_cre_date <= '{key}'
+  -- and TRX.user_id not in (
+  --     -- 내부 직원의 테스트 구매용 유저 아이디 리스트 제외
+  --     36522131
+  --   , 36522128
+  --   , 36522063
+  -- )
+)
+select we_member_id
+, wv_user_id
+, is_pay
+, pay_dt
+, max(is_cx) as is_cx
+, min(is_partial_cx) as is_partial_cx
+, max(is_cx_to_jelly_refund) as is_cx_to_jelly_refund
+, max(cx_dt) as cx_dt
+, transaction_id
+, purchase_id
+, ord_status
+, product_type
+, product_id
+, is_media_product
+, we_art_id
+, we_art_name
+, product_name
+, dur_type
+, dur_unit
+, dur_value
+, promotion_type
+, promotion_unit
+, promotion_value
+, store_item_id
+, paid_item_id
+, cp_code
+, sale_start_dt
+, started_dt
+, ended_dt
+, pay_system
+, pay_method
+, sale_id
+, sale_currency_code
+, sale_price
+, ord_item_qty
+, cx_item_qty
+, currency_code
+, paid_amt
+, paid_amt_krw
+, paid_amt_krw_inner
+, sum(cx_amt) as cx_amt
+, sum(cx_amt_krw) as cx_amt_krw
+, sum(cx_amt_krw_inner) as cx_amt_krw_inner
+from jelly_orders
+group by we_member_id
+, wv_user_id
+, is_pay
+, pay_dt 
+, transaction_id
+, purchase_id
+, ord_status
+, product_type
+, product_id
+, is_media_product
+, we_art_id
+, we_art_name
+, product_name
+, dur_type
+, dur_unit
+, dur_value
+, promotion_type
+, promotion_unit
+, promotion_value
+, store_item_id
+, paid_item_id
+, cp_code
+, sale_start_dt
+, started_dt
+, ended_dt
+, pay_system
+, pay_method
+, sale_id
+, sale_currency_code
+, sale_price
+, ord_item_qty
+, cx_item_qty
+, currency_code
+, paid_amt
+, paid_amt_krw
+, paid_amt_krw_inner
+order by pay_dt
+"""""")
+
+df.createOrReplaceTempView('JELLY_ORDERS')"
+16,md,,just_heading,##### Aggregation and additional data
+17,py,,code,"df_fin = spark.sql(f""""""
+select distinct
+-- USER INFO
+  bigint(ORDS.we_member_id)
+, ORDS.wv_user_id
+, CTRY.country as ctry_code
+
+-- TANSACTION DATA
+, ORDS.is_pay
+, ORDS.pay_dt
+, ORDS.is_cx
+, ORDS.is_partial_cx
+, ORDS.is_cx_to_jelly_refund
+, ORDS.cx_dt
+, ORDS.transaction_id
+, ORDS.purchase_id
+, ORDS.ord_status
+
+-- PRODUCT META DATA
+, ORDS.product_type
+, ORDS.product_id
+, ORDS.is_media_product
+, ORDS.we_art_id
+, ORDS.we_art_name
+, ART.comm_id
+, ORDS.product_name
+, ORDS.dur_type
+, ORDS.dur_unit
+, ORDS.dur_value
+, ORDS.promotion_type
+, ORDS.promotion_unit
+, ORDS.promotion_value
+, ORDS.store_item_id
+, ORDS.paid_item_id
+, ORDS.cp_code
+, ORDS.sale_start_dt
+
+-- ORDER/PURCHASE DATA
+, ORDS.started_dt
+, ORDS.ended_dt
+, ORDS.pay_system
+, ORDS.pay_method
+, case when coalesce(FC_GL.we_member_id, FC_US.we_member_id, FC_JP.we_member_id) is not null then 1 else 0 end as is_fc
+, ORDS.sale_id
+, ORDS.sale_currency_code
+, ORDS.sale_price
+
+, ORDS.ord_item_qty
+, ORDS.cx_item_qty
+
+, ORDS.currency_code
+
+, ORDS.paid_amt
+, ORDS.paid_amt_krw
+, ORDS.paid_amt_krw_inner
+
+, ORDS.cx_amt
+, ORDS.cx_amt_krw
+, ORDS.cx_amt_krw_inner
+
+, cast(sum(case when ORDS.ord_status in ('PAYMENT_COMPLETED', 'PAYMENT_COMPLETED_WILL_RENEW', 'PAYMENT_FAILED') and ORDS.pay_system != 'WEVERSE_SHOP' then 1 else null end) 
+    over (partition by ORDS.wv_user_id, (case when ORDS.ord_status in ('PAYMENT_COMPLETED', 'PAYMENT_COMPLETED_WILL_RENEW', 'PAYMENT_FAILED') and ORDS.pay_system != 'WEVERSE_SHOP' then 1 else null end) order by ORDS.pay_dt) as int) as seq_pay_completed
+, cast(sum(case when ORDS.pay_system != 'WEVERSE_SHOP' then 1 else null end) over (partition by ORDS.wv_user_id order by ORDS.pay_dt rows between unbounded preceding and current row) as int) as seq_all
+, timestamp(current_timestamp() + interval '9' hour) as	run_timestamp
+from (
+  select *
+  from JELLY_ORDERS
+  union all
+  select * EXCEPT (rank)
+  from INAPP_SHOP_ORDERS
+) as ORDS
+left join CTRY
+on ORDS.wv_user_id = CTRY.user_id and date(CTRY.date_id) <= date(ORDS.pay_dt) and date(ORDS.pay_dt) < date(CTRY.next_created_at) and CTRY.seq = 1
+left join FC as FC_GL
+on ORDS.we_member_id = FC_GL.we_member_id and ORDS.we_art_id = FC_GL.we_art_id and ORDS.pay_dt between FC_GL.create_dt and FC_GL.expire_dt and FC_GL.shop = 'GL'
+left join FC as FC_JP
+on ORDS.we_member_id = FC_JP.we_member_id and ORDS.we_art_id = FC_JP.we_art_id and ORDS.pay_dt between FC_JP.create_dt and FC_JP.expire_dt and FC_JP.shop = 'JP'
+left join FC as FC_US
+on ORDS.we_member_id = FC_US.we_member_id and ORDS.we_art_id = FC_US.we_art_id and ORDS.pay_dt between FC_US.create_dt and FC_US.expire_dt and FC_US.shop = 'US'
+left join we_mart.we_artist as ART
+on ORDS.we_art_id = ART.we_art_id
+"""""")"
+18,md,,just_heading,### Run
+19,py,,code,"b = Dataflow(run_mode=run_mode, notifier=noti)
+b.run(dataframe=df_fin, table_info=table, option=option, buckets=['databricks'])"
+20,md,,just_heading,### Appendix
+21,md,,just_heading,###### create query
+22,py,,code,"# spark.sql(""""""
+# create or replace table we_mart.wv_order
+# (
+#   we_member_id	bigint	comment	""위버스 플랫폼 통합 유저의 ID""
+# , wv_user_id	bigint	comment	""위버스 유저 ID""
+# , ctry_code	string	comment	""국가 코드""
+# , is_pay	int	comment	""구매 여부""
+# , pay_dt	timestamp	comment	""구매(=결제) 시점""
+# , is_cx	int	comment	""취소 여부""
+# , is_partial_cx	int	comment	""(젤리의 경우) 부분 환금(취소) 여부""
+# , is_cx_to_jelly_refund	int	comment	""(젤리의 경우) 젤리 환불에 의한 환급 여부""
+# , cx_dt	timestamp	comment	""구매 취소 시점""
+# , transaction_id	string	comment	""구매 별 거래 id(key)""
+# , purchase_id	string	comment ""영수증 구매 테이블 id""
+# , ord_status	string	comment	""주문 상태""
+# , product_type	string	comment	""디지털 상품 종류""
+# , product_id	int	comment	""상품 ID, data_source에 따라 unique""
+# , is_media_product	int	comment	""미디어 상품일 경우""
+# , we_art_id	int	comment	""위버스 플랫폼 통합 아티스트/커뮤니티 ID""
+# , we_art_name	string	comment	""위버스 플랫폼 통합 아티스트/커뮤니티 명""
+# , comm_id	bigint	comment	""위버스 커뮤니티 ID""
+# , product_name	string	comment	""디지털 상품 명""
+# , dur_type	string	comment	""구매상품 적용 단위 및 유형""
+# , dur_unit	string	comment	'구매상품 유형에 따른 단위'
+# , dur_value	int	comment	""구매상품 단위에 따른 적용 값""
+# , promotion_type	string	comment	""이벤트 타입""
+# , promotion_unit	string	comment	'이벤트 타입에 따른 단위'
+# , promotion_value	int	comment	""이벤트 타입에 따른 값""
+# , store_item_id	string	comment	""인앱 결제용 마켓별 사용 상품 ID""
+# , paid_item_id	bigint	comment	""인앱 결제 가능한 상품 ID""
+# , cp_code	string	comment	""컨텐츠 제작 사 코드""
+# , sale_start_dt	timestamp	comment	""판매 시작일""
+# , started_dt	timestamp	comment	""컨텐츠 이용 시작일""
+# , ended_dt	timestamp	comment	""컨텐츠 이용 만료일""
+# , pay_system	string	comment	r""결제 방식/옵션 {INAPP, JELLY, WEVERSE_SHOP, PG}""
+# , pay_method	string	comment	""결제 방식에 따른 결제 수단""
+# , sale_id	bigint	comment	""weverseshop sale_id""
+# , sale_currency_code	string	comment	""상품 객단가 결제 통화""
+# , sale_price	double	comment	""상품 객단가(meta)""
+# , is_fc	int	comment	""주문 당시 아티스트 멤버십 가입 여부""
+# , ord_item_qty	int	comment	""구매 상품 수""
+# , cx_item_qty	int	comment	""취소(환급) 상품 수""
+
+# , currency_code	string	comment	""유저가 지불한 금액의 통화""
+
+# , paid_amt	double	comment	""유저가 실제 지불한 금액""
+# , paid_amt_krw	double	comment	""유저가 실제 지불한 금액_원화환산""
+# , paid_amt_krw_inner	double	comment	""(젤리의 경우) 내부 단가로 계산된 결제 금액_원화환산""
+
+# , cx_amt	double	comment	""유저가 취소(환급)한 금액""
+# , cx_amt_krw	double	comment	""유저가 실제 취소한 금액_원화환산""
+# , cx_amt_krw_inner	double	comment	""(젤리의 경우) 내부 단가로 계산된 취소 금액_원화환산""
+
+# , seq_pay_completed	int	comment	""유저별 구입 한(지불 완료) 상품 순서, 위버스샵 결제분 제외""
+# , seq_all	int	comment	""유저별 상품 거래 내역의 전체 순서, 위버스샵 걸제분 제외""
+# , run_timestamp	timestamp	comment	""데이터가 write된 날짜, 시간""
+# )
+# using DELTA
+# comment '위버스 유료 결제 현황'
+# """""")"
+23,md,,just_heading,###### weverse1_order_mart(static)
+24,py,,code,"# %sql
+# create or replace table we_mart_wv1.wv_order_with_sale_id as 
+# select a.*, b.sale_id, INAPP.price as paid_price, INAPP.currency_code as paid_currency_code
+# , case when a.market = 'WEVERSE_SHOP' then split(a.transaction_id, '[:]')[1] else INAPP.id end as purchase_id
+# from we_mart_wv1.wv_order as a
+# left join we_mart.ws_order as b
+# on split(a.transaction_id, '[:]')[1] = b.ord_sheet_number
+# left join billing.in_app_purchase as INAPP
+# on a.market != 'WEVERSE_SHOP' and a.transaction_id = INAPP.transaction_id 
+"
