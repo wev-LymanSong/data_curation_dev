@@ -1,0 +1,290 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.wv_med
+2,md,,basic_info,"#### Basic Info
+* 위버스 내 미디어들의 메타정보
+* meta data 
+* DAILY Append
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2024-07-30 |임혜경|유튜브 id 추가 (api호출목적)|
+|2024-07-03 |임혜경|썸네일 url 추가|
+|2024-04-19 |임혜경|합동 라이브 유무 추가|
+|2024-01-02 |임혜경|영상 등급 추가|
+|2022-07-18 |송재영|weverse2로 전체 변경|
+|2022-04-29 |송재영|sale_id 어레이로 변경|
+|2022-03-14 |송재영|fivetran과 연결 변경, paid_item_id와 sale_id 연결 정보 추가|
+|2022-01-04 |박상민|svod paid_item 추가/ 컬럼추가: sale_id, sale_price, pay_method|
+|2021-11-10 |박상민|마트생성/배치생성|
+
+
+###### Source Tables
+* weverse2.community_content_post
+* weverse2.community_content_post_photo_relation
+* weverse2.community_content_photo
+* weverse2.community_common_product
+* weverse2.community_content_common_post_video_relation
+* weverse2.video_video
+* weverse2.video_vod
+* we_mart.we_artist
+* weverse2.video_vod_audit"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"import pyspark.sql.functions as f
+
+key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'wv_media', 
+  'service' : None, #default (None)
+  'partition' : ['part_date']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'append', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+}"
+6,md ,,etc, #### Main Query
+7,md,,just_heading,##### Temp Views
+8,py,,code," reg_exp1 = r'[\"", \'\']'
+ post_q = f""""""
+ select 
+ concat(shard_id, '-', post_local_id) as post_id
+ , shard_id, post_local_id
+ , comment_count, emotion_count
+ , timestamp(from_unixtime(published_at/1000, 'yyyy-MM-dd HH:mm:ss')) + interval 9 hours as published_at
+ , timestamp(from_unixtime(created_at/1000, 'yyyy-MM-dd HH:mm:ss')) + interval 9 hours as created_at
+ , timestamp(from_unixtime(updated_at/1000, 'yyyy-MM-dd HH:mm:ss')) + interval 9 hours as updated_at
+ , get_json_object(data, '$.sectionType') as section_type
+ , get_json_object(data, '$.mediaInfo.mediaType') as media_type
+ , cast(get_json_object(data, '$.communityId') as int) as community_id
+ , case when get_json_object(data, '$.membershipOnly') = 'true' then 1 else 0 end as is_fc_only
+ , get_json_object(data, '$.mediaInfo') as media_info
+ , get_json_object(data, '$.image') as image_info
+ , get_json_object(data, '$.video') as video_info
+ , get_json_object(data, '$.youtube') as youtube_info
+ , filter(split(get_json_object(data, '$.productIds'), '{reg_exp1}'), x -> regexp_like(x, r'\w')) as product_ids
+ , case when data:coHostLive is not null then 1 else 0 end as is_joint_live
+ from weverse2.community_content_post
+ where get_json_object(data, '$.mediaInfo') is not null
+ """"""
+ spark.sql(post_q).createOrReplaceTempView('media')"
+9,py,,code,"media_detail_q = f""""""
+select distinct
+-- POST INFO
+media.post_id, media.shard_id, media.post_local_id, media.comment_count, media.emotion_count
+, media.published_at, media.created_at, media.updated_at, media.section_type, media.media_type
+, media.community_id, media.is_fc_only
+, case when size(media.product_ids) < 1 then null else array_distinct(media.product_ids) end as product_ids 
+, media.is_joint_live
+
+-- MEDIA INFO
+, get_json_object(media_info, '$.internalTitle') as title_internal
+, get_json_object(media_info, '$.titles.values.ko') as title_ko
+, get_json_object(media_info, '$.titles.values.en') as title_en
+, get_json_object(media_info, '$.titles.values.ja') as title_ja 
+, get_json_object(media_info, '$.bodies') as body
+, get_json_object(media_info, '$.thumbnail.url') as url
+, get_json_object(media_info, '$.kewords') as keywords
+-- , get_json_object(media_info, '$.categoryIds') as med_cat_ids
+, case when get_json_object(media_info, '$.categoryIds') = '[]' then null else array_distinct(cast(filter(split(get_json_object(media_info, '$.categoryIds'), r'[^0-9]'), x -> regexp_like(x, r'\d')) as array<int>)) end as media_category_ids
+-- , get_json_object(media_info, '$.mediaGroupIds') as med_group_ids
+, case when get_json_object(media_info, '$.mediaGroupIds') = '[]' then null else array_distinct(cast(filter(split(get_json_object(media_info, '$.mediaGroupIds'), r'[^0-9]'), x -> regexp_like(x, r'\d')) as array<int>)) end as media_group_ids
+
+-- VIDEO_INFO
+, get_json_object(video_info, '$.videoId') as video_id
+, case when get_json_object(video_info, '$.liveToVod') = 'true' then 1 else 0 end as is_live_to_vod
+, timestamp(from_unixtime(get_json_object(video_info, '$.onAirStartAt')/1000, 'yyyy-MM-dd HH:mm:ss')) + interval 9 hours as onair_started_at
+
+-- YOUTUBE_INFO
+, get_json_object(youtube_info, '$.youtubeVideoId') as youtube_videoid
+, get_json_object(youtube_info, '$.videoPath') as youtube_path
+, get_json_object(youtube_info, '$.playTime') as play_time
+, get_json_object(youtube_info, '$.screenOrientation') as screen_orientation
+
+-- IMAGE_INFO
+-- , get_json_object(image_info, '$.viewType') as view_type
+-- , get_json_object(c.value, '$.width') as width
+-- , get_json_object(c.value, '$.height') as height
+, collect_set(c.id) over (partition by media.post_id) as photo_ids
+
+from media
+left join weverse2.community_content_post_photo_relation as b
+on media.post_id = b.post_id
+left join weverse2.community_content_photo as c
+on b.photo_id = concat(c.shard_id, '-', c.id)
+where community_id < 1000
+""""""
+spark.sql(media_detail_q).createOrReplaceTempView('media_detail')"
+10,py,,code,"wev1_q = """"""
+create or replace temp view WEV1 as 
+select cast(split(wev1, r'[-]')[1] as int) as media_id, split(wev2, r'[/]')[1] as post_id
+from weverse2.community_common_wev_id
+where split(wev1, r'[-]')[0] = 'MEDIA'
+order by media_id
+""""""
+spark.sql(wev1_q)"
+11,md,,just_heading,##### Aggregation
+12,py,,code,"agg_q = f""""""
+select distinct 
+  MEDD.post_id, WEV1.media_id, MEDD.section_type
+  , MEDD.media_type
+  , MEDD.title_internal as media_name
+  , MEDD.community_id as comm_id
+  , WEART.we_art_id
+  , WEART.we_art_name
+  , MEDD.is_fc_only
+  , case when MEDD.media_type = 'IMAGE' then 1 else 0 end as is_photo
+-- , null as media_dur -- MEDD.playtime
+  , case when MEDD.product_ids is not null then 1 else 0 end as is_pitem
+  , MEDD.is_joint_live
+  
+  /*
+  20220812 fc_only 컨텐츠들은 미디어 카테고리가 없는 경우가 대다수이기에 -8888이라는 특정 id를 기존 어레이에 추가해줌, 차후 we_mart.wv_media_cat과 조인 가능
+  */
+  , case when MEDD.is_fc_only = 1 and section_type = 'MEDIA' then 
+         case when MEDD.media_category_ids is not null then array_union(MEDD.media_category_ids, array(-8888)) 
+         else array(-8888) end
+    else MEDD.media_category_ids end as media_cat_ids
+  , MEDD.media_group_ids
+  
+-- video  
+  , VID.video_id
+  , VID.infra_video_id
+  , VID.type as video_type
+  , VID.preview_type
+  , VID.expose_status as video_expose_status
+  , VID.screen_orientation
+--   , VID.paid
+  , VID.live_to_vod_status
+--   , VID.live_chat_count
+--   , VID.live_thumb_yn
+--   , VID.membership_only
+  , timestamp(from_unixtime(VID.created_at/1000, 'yyyy-MM-dd HH:mm:ss')) + interval 9 hours as video_cre_dt
+  , case when VOD.video_id is not null then cast(VOD.play_time as int) when MEDD.media_type = 'YOUTUBE' then cast(MEDD.play_time as int) end as media_dur 
+  , VOD.preview_start
+  , VOD.preview_end
+  , MEDD.url as thumbnail_url
+  , MEDD.youtube_path
+  , MEDD.youtube_videoid
+
+-- media rate
+  , RATE.rate_status
+  
+-- photo
+  , case when size(MEDD.photo_ids) = 0 then null else MEDD.photo_ids end as photo_ids
+  , size(MEDD.photo_ids) as cnt_photo
+  
+-- reaction
+  , VID.play_count
+  , MEDD.comment_count
+  , MEDD.emotion_count
+  
+-- tiemstamps
+  , MEDD.created_at as media_cre_dt
+  , MEDD.updated_at as media_upd_dt
+  , MEDD.published_at as media_rel_dt
+  , '{key}' as part_date
+  from media_detail as MEDD
+--   left join weverse2.community_content_common_product_media_relation as PROD_REL
+--  on MEDD.post_id = PROD_REL.post_id
+  left join weverse2.community_content_common_post_video_relation as VIDEO_REL
+  on MEDD.post_id = VIDEO_REL.post_id
+  left join weverse2.video_video as VID
+  on MEDD.video_id = VID.video_id
+  left join weverse2.video_vod as VOD
+  on VID.video_id = VOD.video_id
+  left join we_mart.we_artist as WEART
+  on MEDD.community_id = WEART.comm_id
+  left join WEV1
+  on MEDD.post_id = WEV1.post_id
+  left join 
+  (
+    select video_id, rate_status
+    from weverse2.video_vod_audit 
+    where process_status = 'COMPLETE'
+    qualify row_number() over (partition by video_id order by updated_at desc) = 1
+  ) as RATE
+  on VID.video_id = cast(RATE.video_id as bigint)
+"""""""
+13,md,,just_heading,#### Run
+14,py,,code,"dflow = Dataflow(run_mode=run_mode, notifier=noti)
+dflow.run(dataframe=spark.sql(agg_q), table_info=table, option=option, buckets=['databricks'])"
+15,md,,just_heading,#### Appendix
+16,md,,just_heading,##### create query
+17,py,,code,"# %sql
+# create or replace table we_mart.wv_media
+# (
+# post_id	string	comment	""포스트 고유 ID""
+# , media_id	int	comment	""wv1에서의 미디어 ID""
+# , section_type	string	comment	""포스트 섹션 유형""
+# , media_type	string	comment	""미디어 유형""
+# , media_name	string	comment	""미디어 명""
+# , comm_id	int	comment	""커뮤니티 명""
+# , we_art_id	int	comment	""we_art_id""
+# , we_art_name	string	comment	""we_art_name""
+# , is_fc_only	int	comment	""멤버십 전용 여부""
+# , is_photo	int	comment	""사진 여부""
+# , is_pitem	int	comment	""유료 구매 아이템 여부""
+# , is_joint_live	int	comment	'합동라이브 여부'
+# , media_cat_ids	array<int>	comment	""미디어 카테고리 아이디들""
+# , media_group_ids	array<int>	comment	""미디어 그룹 아이디들""
+# -- , product_type	string	comment	""유료 컨텐츠 종류""
+# -- , product_id	int	comment	""유료 컨텐츠 ID""
+# -- , pay_method	string	comment	""지불 옵션""
+# -- , tvod_id	bigint	comment	""WV1 기준 TVOD ID""
+# -- , svod_group_id	bigint	comment	""구독형 상품 그룹 ID""
+# -- , vod_type string comment ""VOD 타입""
+# -- , paid_item_id	bigint	comment	""인앱 결제 가능한 상품 ID""
+# -- , package_name	string	comment	""패키지 명""
+# -- , media_product_id	bigint	comment	""weverseshop 기준 유료 컨텐츠 ID""
+# -- , dur_type	string	comment	""구매상품 적용 적용기간""
+# -- , cp_plan_id	bigint	comment	""쿠폰 고유 ID""
+# -- , cp_plan_name	string	comment	""쿠폰 명""
+# -- , sale_id	bigint	comment	""weverseshop sale_id""
+# -- , shop	string	comment	""sale_id 에 따른 SHOP""
+# -- , sale_price_krw	int	comment	""판매가격""
+# -- , cp_code string comment ""CP(판권)사의 코드 정보""
+# -- , content_provider string comment ""CP(판권)사 명""
+# -- , sale_start_dt	timestamp	comment	""판매 시작일""
+# -- , sale_end_dt	timestamp	comment	""판매 종료일""
+# , video_id	bigint	comment	""비디어 고유 ID""
+# , infra_video_id	string	comment	""네이버 동영상 플랫폼 내 ID""
+# , video_type	string	comment	""비디어 타입""
+# , preview_type	string	comment	""프리뷰 여부""
+# , video_expose_status	string	comment	""비디오 공개 상태""
+# , screen_orientation	string	comment	""기본 뷰 모양""
+# , live_to_vod_status	string	comment	""라이브 => VOD 변경 상태""
+# , video_cre_dt	timestamp	comment	""비디어 생성일""
+# , media_dur	int	comment	""미디어 총 시간""
+# , preview_start	int	comment	""미리보기 시작 지점""
+# , preview_end	int	comment	""미리보기 종료 지점""
+# , thumbnail_url	string	comment	""썸네일 URL""
+# , youtube_path string comment ""유튜브 URL""
+# , youtube_videoid string comment ""유튜브 video id""
+# , rate_status string comment ""영상등급""
+# , photo_ids	array<bigint>	comment	""포함된 사진(photo) 아이디 어레이""
+# , cnt_photo	int	comment	""사진 개수""
+# , play_count	bigint	comment	""재생 수""
+# , comment_count	int	comment	""댓글 수""
+# , emotion_count	int	comment	""응원 수""
+# , media_cre_dt	timestamp	comment	""미디어 생성 일시""
+# , media_upd_dt	timestamp	comment	""미디어 수정 일시""
+# , media_rel_dt	timestamp	comment	""미디어 노출 일시""
+# , part_date string comment ""파티션 일자""
+# )
+# partitioned by(part_date)
+# comment ""미디어 메타 정보""
+"

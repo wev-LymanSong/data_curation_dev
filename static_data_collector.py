@@ -4,14 +4,14 @@ from configurations import *
 from markdown_it import MarkdownIt
 from mdutils.mdutils import MdUtils
 from itertools import zip_longest
-from gedi_wev.codes.connectors.github_repo_connector import *
-from gedi_wev.codes.connectors.databricks_connector import *
+from gedi_wev.connectors.github_repo_connector import *
+from gedi_wev.connectors.databricks_connector import *
  
 print(f"Current Directory: {os.getcwd()}")
 
 TARGET_FIELD =  'we_mart'
 TARGET_DB =     'we_mart'
-TARGET_TABLE =  'wa_album'
+TARGET_TABLE =  'wv_media'
 md = MarkdownIt()
 
 gc_databricks = GithubConnector(github_token=os.environ['GITHUB_TOKEN'], repo_name= 'databricks', branch='main')
