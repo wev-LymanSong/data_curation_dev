@@ -1,7 +1,7 @@
 import os
 from configurations import *
-from databricks_connector import DatabricksConnector
-from jira_connector import JiraConnector
+from gedi_dev.codes.connectors.databricks_connector import DatabricksConnector
+from gedi_dev.codes.connectors.jira_connector import JiraConnector
 import json
 import pickle
 

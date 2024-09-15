@@ -1,35 +1,17 @@
 import os
 import ast
+from configurations import *
 from markdown_it import MarkdownIt
 from mdutils.mdutils import MdUtils
 from itertools import zip_longest
-from github_repo_connector import *
-from databricks_connector import *
-from configurations import *
+from gedi_wev.codes.connectors.github_repo_connector import *
+from gedi_wev.codes.connectors.databricks_connector import *
+ 
+print(f"Current Directory: {os.getcwd()}")
 
-KEY_DIR = "/Users/lymansong/Documents/GitHub/keys"
-BASE_DIR = "/Users/lymansong/Documents/GitHub/mtms"
-os.chdir(BASE_DIR)
-DATA_DIR = os.path.join(BASE_DIR, "data")
-SPEC_DIR = os.path.join(DATA_DIR, "specs")
-SOURCECODE_DIR = os.path.join(DATA_DIR, "source_codes")
-
-REPO_DIR = '/Users/lymansong/Documents/GitHub/databricks'
-CODE_DIR = os.path.join(REPO_DIR, "src/data_analytics")
-WE_MART_DIR = os.path.join(CODE_DIR, "mart/we_mart")
-WE_META_DIR = os.path.join(CODE_DIR, "meta/we_meta")
-WE_STAT_DIR = os.path.join(CODE_DIR, "stats/we_mart")
-WI_VIEW_DIR = os.path.join(CODE_DIR, "stats/wi_view")
-
-field2dir_dict =  {
-    'we_mart' : WE_MART_DIR, 
-    'we_meta' : WE_META_DIR, 
-    'we_stats' : WE_STAT_DIR, 
-    'wi_view' : WI_VIEW_DIR, 
-}
 TARGET_FIELD =  'we_mart'
 TARGET_DB =     'we_mart'
-TARGET_TABLE =  'ws_fc_user_history'
+TARGET_TABLE =  'wa_album'
 md = MarkdownIt()
 
 gc_databricks = GithubConnector(github_token=os.environ['GITHUB_TOKEN'], repo_name= 'databricks', branch='main')
@@ -67,6 +49,8 @@ def safe_exec(code_str):
 ## file load
 with open(os.path.join(field2dir_dict[TARGET_FIELD], TARGET_TABLE + ".py"), "rb") as f:
     source_code_cells = "".join([l.decode() for l in f.readlines()])
+    if "\r" in source_code_cells:
+        source_code_cells = source_code_cells.replace("\r", "")
     source_code_lang = 'PYTHON' if source_code_cells.startswith(NOTEBOOK_PREFIX_PY) else "SQL"
     f.close()
 
@@ -245,8 +229,6 @@ mdFile.new_line("---")
 
 
 ## RELATED PAGES
-
-
 
 
 # File save

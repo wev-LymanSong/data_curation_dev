@@ -2,24 +2,38 @@ import os
 import pandas as pd
 import re
 import json
-
-KEY_DIR = "/Users/lymansong/Documents/GitHub/keys"
-BASE_DIR = "/Users/lymansong/Documents/GitHub/mtms"
+ROOT_DIR = "c:\\Users\\thdwo\\Documents\\Github"
+KEY_DIR = "c:\\Users\\thdwo\\Documents\\Github\\keys"
+BASE_DIR = "c:\\Users\\thdwo\\Documents\\Github\\gedi_dev"
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 REQ_DIR = os.path.join(DATA_DIR, 'requests_extraction')
 SPEC_DIR = os.path.join(DATA_DIR, "specs")
 SOURCECODE_DIR = os.path.join(DATA_DIR, "source_codes")
 
-REPO_DIR = '/Users/lymansong/Documents/GitHub/databricks'
+REPO_DIR = 'c:\\Users\\thdwo\\Documents\\Github\\databricks'
+DAG_DIR = "dags/utils/dynamic_dag/wev/task_list"
+
 CODE_DIR = os.path.join(REPO_DIR, "src/data_analytics")
 WE_MART_DIR = os.path.join(CODE_DIR, "mart/we_mart")
 WE_META_DIR = os.path.join(CODE_DIR, "meta/we_meta")
 WE_STAT_DIR = os.path.join(CODE_DIR, "stats/we_mart")
 WI_VIEW_DIR = os.path.join(CODE_DIR, "stats/wi_view")
 
+WE_MART_TEMPLATE_PAGE_ID = '10006aff62a880649b36da4c4d992406'
+WE_META_TEMPLATE_PAGE_ID = '10206aff62a88022a849fc900506d5af'
+
+
+field2dir_dict =  {
+    'we_mart' : WE_MART_DIR, 
+    'we_meta' : WE_META_DIR, 
+    'we_stats' : WE_STAT_DIR, 
+    'wi_view' : WI_VIEW_DIR, 
+}
 
 from dotenv import load_dotenv
 print(load_dotenv(dotenv_path= os.path.join(KEY_DIR, ".env")))
+os.chdir(BASE_DIR)
+
 
 COLLABORATOR_DICT = {
     # DATA INSIGHT

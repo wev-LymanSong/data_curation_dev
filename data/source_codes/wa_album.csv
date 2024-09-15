@@ -1,0 +1,215 @@
+,cell_type,cell_title,role,codes
+1,md,,basic_info,"#### Basic Info
+* 위버스 앨범 메타 정보
+* Mart Primary 
+* DAILY OVERWRITE
+* WIKI : [LINK](https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/3412689812/we+mart.wa+album) 
+* 기타 : 위버스 앨범 앱에 등록된 앨범들의 메타 테이블, 위버스 샵 앨범 메타와 연계
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2022-09-22 |송재영|마트생성|
+|2022-09-23|송재영|sale_ids 컬럼 추가|
+|2022-12-05|송재영|앨범 메타 소스 테이블 변경(we_mart.ws_album => we_meta.wa_album)|
+|2023-04-30|송재영|하나의 ws_album에 두개의 wa_album이 연결되는 케이스 발생, ws_album left join wa_album이 아닌 wa_album left join ws_album으로 변경|
+|2023-12-07|송재영|WECODE를 활용해 아티스트 정보 맵핑, text similarity를 이용해 ws_album과 맵핑 변경|
+
+###### Source Tables
+* we_meta.ws_album
+* album.album
+* album.artist
+* album.user_album_reg
+* wecode.tb_entity
+* wecode.tb_entity_meta
+* coupon.tb_cp_used
+* coupon.tb_cp_pl"
+2,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+3,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'wa_album', 
+  'service' : 'weverse album', #default (None)
+}
+
+option = {
+  'date' : None,
+  'format': 'delta', #default (delta)
+  'mode' : 'overwrite', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+}
+
+spark.sql('set time zone ""Asia/Seoul""')"
+4,py,,code,run_mode
+5,md,,just_heading,#### Main Query
+6,py,Wecode,code,"spark.sql(""""""
+    select a.id as entity_id, a.entity_code as wecode, a.we_art_id, d.we_art_id as parent_we_art_id, nvl(ART.we_art_name, ART_2.we_art_name) as master_we_art_name, nvl(d.we_art_id, a.we_art_id) as master_we_art_id
+    from wev_prod.wecode.tb_entity as a
+    left join wev_prod.wecode.tb_entity_meta as b
+    on a.id = b.entity_id
+    left join wev_prod.wecode.tb_entity_meta as c
+    on b.parent_id = c.id
+    left join wev_prod.wecode.tb_entity as d
+    on c.entity_id = d.id
+    left join wev_prod.we_mart.we_artist as ART
+    on d.we_art_id = ART.we_art_id
+    left join wev_prod.we_mart.we_artist as ART_2
+    on a.we_art_id = ART_2.we_art_id
+"""""").createOrReplaceTempView(""WE_CODE"")"
+7,py,Weverse Shop Album Meta Data,code,"ws_albums = spark.sql(f""""""
+  select a.we_art_id, a.we_art_name, a.album_id, a.album_release_date
+  , a.album_name
+  , collect_set(b.sale_id) as sale_ids
+  , collect_set(case when b.is_wa_included = 1 then sale_id end) as weverse_album_sale_ids
+  , collect_set(case when b.is_wa_included != 1 then sale_id end) as physical_album_sale_ids
+  from(
+    select distinct we_art_id, we_art_name, album_id, album_name, album_release_date
+    from we_meta.ws_album
+    where is_wa_included = 1
+    and part_date = '{key}'
+  ) as a
+  left join we_meta.ws_album as b
+  on a.album_name = b.album_name and b.part_date = '{key}'
+  group by 1, 2, 3, 4, 5
+  order by album_id desc
+"""""")"
+8,py,Coupon Meta,code,"spark.sql(f""""""
+select distinct album_id, collect_list(distinct PLAN.id) as cp_plan_ids
+  from album.user_album_reg as REG
+  left join coupon.tb_cp_used as USED
+  on REG.coupon_num =  USED.cp_cd
+  left join coupon.tb_cp_plan as PLAN
+  on USED.cp_plan_id = PLAN.id
+  where PLAN.is_test = 0
+  group by 1
+"""""").createOrReplaceTempView(""CP"")"
+9,py,"Merge(Albums, Wecode, Coupon)",code,"wa_albums = spark.sql(f""""""
+select 
+  WA_ALBUM.wa_album_id
+, WA_ALBUM.wa_album_name
+, WA_ALBUM.we_art_id
+, WA_ALBUM.we_art_name
+, WA_ALBUM.entity_we_art_id
+, WA_ALBUM.wa_artist_id
+, WA_ALBUM.wa_art_name
+, WA_ALBUM.wa_release_date
+, CP.cp_plan_ids
+from (
+  select int(ALBUM.album_id) as wa_album_id
+  , ALBUM.title as wa_album_name
+  , WE_CODE.master_we_art_id as we_art_id
+  , WE_CODE.master_we_art_name as we_art_name
+  , WE_CODE.we_art_id as entity_we_art_id
+  , ARTIST.artist_id as wa_artist_id
+  , ARTIST.artist_name as wa_art_name
+  , date(ALBUM.release_date) as wa_release_date
+  from wev_prod.album.album as ALBUM
+  left join wev_prod.album.artist as ARTIST
+  on ALBUM.artist_id = ARTIST.artist_id
+  left join WE_CODE
+  on ARTIST.we_code = WE_CODE.wecode
+) as WA_ALBUM
+left join CP
+on CP.album_id = WA_ALBUM.wa_album_id
+order by wa_album_id desc
+"""""""
+10,py,Join Wa_album and ws_album,code,"f_join = wa_albums.join(ws_albums, on=""we_art_id"", how='inner').select(
+      wa_albums.we_art_id.cast('int')
+      , wa_albums.we_art_name.cast('string')
+      , wa_albums.wa_album_id.cast('bigint')
+      , wa_albums.wa_album_name.cast('string')
+      , ws_albums.album_id.cast('bigint')
+      , ws_albums.album_name.cast('string')
+      , ws_albums.album_release_date.cast('string')
+      , ws_albums.sale_ids.cast('array<bigint>')
+      , ws_albums.weverse_album_sale_ids.cast('array<bigint>')
+      , ws_albums.physical_album_sale_ids.cast('array<bigint>')
+      ).toPandas()\
+      .sort_values([
+        'wa_album_id'
+      , 'album_name'
+      ]
+  )"
+11,py,Get similarity and pick the most relevant album,code,"from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+import pandas as pd
+
+def get_sim(r):
+    vectorizer = TfidfVectorizer()
+    if r['album_name'] is not None:
+        vectors = vectorizer.fit_transform([r['wa_album_name'].upper().strip(), r['album_name'].upper().strip()])
+        res = (cosine_similarity(vectors)[0][1] + cosine_similarity(vectors)[1][0])/2
+    else :
+        res = np.nan
+    return  res
+
+
+df_join['sim'] = df_join.apply(lambda x: get_sim(x) if np.isnan(x['we_art_id']) == False else np.nan, axis = 1).astype(float) 
+
+from pyspark.sql.functions import row_number, col
+from pyspark.sql.window import Window
+
+windowSpec = Window.partitionBy([""we_art_id"", ""wa_album_id""]).orderBy(col(""sim"").desc()).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+df_join_s = (
+    spark.createDataFrame(df_join)
+    .withColumn('rank_sim', row_number()
+    .over(windowSpec))
+    .filter(""rank_sim = 1 and case when album_name is null then 1=1 else sim > 0.2 end"")
+)"
+12,py,Select fields,code,"_fin = wa_albums.join(df_join_s, on = ['we_art_id', 'wa_album_id'], how= 'left')\
+    .select(
+          wa_albums.wa_album_id.cast(""int"")
+        , wa_albums.wa_album_name.cast(""string"")
+        , wa_albums.we_art_id.cast(""int"")
+        , wa_albums.we_art_name.cast(""string"")
+        , wa_albums.entity_we_art_id.cast(""bigint"")
+        , wa_albums.wa_artist_id.cast(""bigint"")
+        , wa_albums.wa_art_name.cast(""string"")
+        , wa_albums.wa_release_date.cast(""date"")
+        , df_join_s.album_id.cast(""int"")
+        , df_join_s.album_name.cast(""string"")
+        , df_join_s.album_release_date.cast(""date"")
+        , wa_albums.cp_plan_ids
+        , df_join_s.sale_ids
+        , df_join_s.weverse_album_sale_ids
+        , df_join_s.physical_album_sale_ids
+    )\
+    .orderBy(""wa_album_id"")"
+13,md,,just_heading,#### Run
+14,py,,code,"b = Dataflow(run_mode=run_mode, notifier=noti)
+b.run(dataframe=df_fin, table_info=table, option=option, buckets=['databricks'])"
+15,md,,just_heading,#### Appendix; Create Table
+16,py,,code,"q = """"""
+create or replace table we_mart.wa_album
+(
+  wa_album_id	int	comment	""위버스 앨범 ID""
+, wa_album_name	string	comment	""위버스 앨범 명""
+, we_art_id	int	comment	""위버스 플랫폼 내 통합 아티스트 ID""
+, we_art_name	string	comment	""위버스 플랫폼 내 통합 아티스트 명""
+, entity_we_art_id  bigint comment ""wecode 에 따른 객체 아티스트 ID(솔로/그룹/유닛 분리)""
+, wa_artist_id	bigint	comment	""위버스 앨범 아티스트 ID""
+, wa_art_name	string	comment	""위버스 앨범 아티스트 명""
+, wa_release_date	date	comment	""위버스 앨범 출시 일""
+, album_id	int	comment	""앨범 ID(WS 앨범 메타)""
+, album_name	string	comment	""앨범 명 (WS 앨범 메타)""
+, album_release_date	date	comment	""앨범 발매일 (WS 앨범 메타)""
+, cp_plan_ids	array<bigint>	comment	""쿠폰 cp_plan_id 리스트""
+, sale_ids	array<bigint>	comment ""앨범과 관련된 모든 sale_id 리스트""
+, weverse_album_sale_ids	array<bigint>	comment	""위버스 앨범 sale_id 리스트""
+, physical_album_sale_ids	array<bigint>	comment	""실물 앨범 sale_id 리스트""
+) 
+comment ""위버스 앨범 메타 정보""
+""""""
+# spark.sql(q)
+"

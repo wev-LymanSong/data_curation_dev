@@ -1,4 +1,6 @@
 import requests
+import os
+import sys
 from notion_client import Client
 from markdown_it import MarkdownIt
 from parser_utils import get_heading, get_text_block, get_divider_block 

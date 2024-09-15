@@ -3,8 +3,8 @@ import requests
 from notion_client import Client
 import os
 from markdown_it import MarkdownIt
-from parser_utils import parse_text
-from table_generator import TableGenerator
+from gedi_dev.codes.utils.parser_utils import parse_text
+from gedi_dev.codes.utils.table_generator import TableGenerator
 
 os.environ['NOTION_API_KEY'] = "secret_jnUpyC7BqRV1CEF3LmeEJ2sQPSFqKuiWsWtdnV2KIER"
 notion = Client(auth=os.environ["NOTION_API_KEY"])

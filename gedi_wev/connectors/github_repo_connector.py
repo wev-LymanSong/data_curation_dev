@@ -6,14 +6,6 @@ from datetime import datetime, timedelta
 from configurations import * 
 
 ## 각종 디렉토리 설정
-REPO_DIR = '/Users/lymansong/Documents/GitHub/databricks'
-CODE_DIR = os.path.join(REPO_DIR, "src/data_analytics")
-WE_MART_DIR = os.path.join(CODE_DIR, "mart/we_mart")
-WE_META_DIR = os.path.join(CODE_DIR, "meta/we_meta")
-WE_STAT_DIR = os.path.join(CODE_DIR, "stats/we_mart")
-WI_VIEW_DIR = os.path.join(CODE_DIR, "stats/wi_view")
-
-DAG_DIR = "dags/utils/dynamic_dag/wev/task_list"
 
 class GithubConnector(object):
     def __init__(self, github_token, repo_name, branch, owner = 'benxcorp'):
@@ -21,7 +13,7 @@ class GithubConnector(object):
         self.repo_name = repo_name
         self.branch = branch
         self.owner = owner
-        self.REPO_DIR = f'/Users/lymansong/Documents/GitHub/{self.repo_name}'
+        self.REPO_DIR = os.path.join(ROOT_DIR, self.repo_name)
         # Headers for authentication
         self.headers = {
             "Authorization": f"token {self.github_token}"
@@ -29,6 +21,7 @@ class GithubConnector(object):
         ## 데이터브릭스 코드 레포지토리 main 업데이트
         os.chdir(self.REPO_DIR)
         os.system(f"git pull origin {self.branch}") 
+        os.chdir(BASE_DIR)
     
     ## databricks용 Method 정의
 
@@ -204,7 +197,7 @@ class GithubConnector(object):
             4. API 요청이 실패할 경우 에러 메시지를 출력, None을 반환
         """
         
-        repo_file_path = "src/" + file_path.split("/src/")[-1] + ".py"
+        repo_file_path = "src" + file_path.split("src")[-1].replace("\\", "/") + ".py"
         url = f"https://api.github.com/repos/{self.owner}/{self.repo_name}/commits"
         params = {
             "path": repo_file_path,
@@ -255,7 +248,7 @@ class GithubConnector(object):
             dag_path = os.path.join(self.REPO_DIR, DAG_DIR, dag_name)
         else:
             dag_path = os.path.join(self.REPO_DIR, DAG_DIR, dag_name + '.py')
-        with open(dag_path, 'r') as file:
+        with open(dag_path, 'r', encoding='utf-8') as file:
             code = file.read()
     
         local_vars = {}
@@ -342,8 +335,8 @@ class GithubConnector(object):
 
 
 ## test run - databricks
-# gc = GithubConnector(github_token=os.environ['GITHUB_TOKEN'], repo_name= 'databricks', branch='main')
-# upd_files = gc.get_update_files(since_date='2024-08-23', time_delta_dates=1, verbose=False)
+gc = GithubConnector(github_token=os.environ['GITHUB_TOKEN'], repo_name= 'databricks', branch='main')
+upd_files = gc.get_update_files(since_date='2024-08-23', time_delta_dates=1, verbose=False)
 
 
 # table_name = gc.parse_table_name_from_dir(upd_files[3])
@@ -412,4 +405,5 @@ class GithubConnector(object):
 #             print(result_data)
 #         df = pd.concat([df, pd.DataFrame([result_data])], ignore_index=False)
 # else:
+
 #     print(response.text)

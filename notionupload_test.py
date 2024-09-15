@@ -1,7 +1,7 @@
 import os
 
-from md2notion_uploader import *
-from notion_connector import NotionConnector
+from gedi_dev.codes.utils.md2notion_uploader import *
+from gedi_dev.codes.connectors.notion_connector import NotionConnector
 from configurations import *
 MASTER_PAGE_ID = "b43871505e034988ab04e78b72875a40"
 WE_META_DB = 'f547d15c6d3643b5ba9110d7e33c8b13'
