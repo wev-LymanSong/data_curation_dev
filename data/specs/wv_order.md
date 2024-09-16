@@ -98,7 +98,7 @@ we_mart.wv_order
   
 # TABLE NOTICE
   
-    
+   
 ---
 # COLUMN INFO
 
@@ -158,7 +158,7 @@ we_mart.wv_order
 ---
 # HOW TO USE
   
-    
+   
 ---
 # PIPELINE INFO
 
@@ -169,13 +169,12 @@ we_mart.wv_order
 ### Update Interval: DAILY
 
 ### Update Type: OVERWRITE
-  
-  
+
 ## 📍 LINK URLs
 
-### Github: [Source Code](https://github.com/benxcorp/databricks/blob/main/src/c:\Users\thdwo\Documents\Github\databricks\src/data_analytics\mart/we_mart\wv_order.py)
+### Github: [Source Code](https://github.com/benxcorp/databricks/blob/main/src/data_analytics/mart/we_mart/wv_order.py)
 
-### Airflow: [DAG](https://github.com/benxcorp/databricks/blob/main/src/c:\Users\thdwo\Documents\Github\databricks\src/data_analytics\mart/we_mart\wv_order.py)
+### Airflow: [DAG](https://github.com/benxcorp/dp-airflow/blob/main/dags/utils/dynamic_dag/wev/task_list/analytics_we_mart_priority_daily.py)
   
     
 ---
@@ -207,6 +206,6 @@ we_mart.wv_order
 
 ## 🐤 Downstream Tables Info
   
-    
+   
 ---  
 ---

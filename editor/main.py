@@ -105,9 +105,16 @@ st.markdown(
         padding: 8px;
         font-size: 17pt;
     }
+    h4, h5, h6 {
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-radius: 5px;
+        color: #ffffff !important;
+        padding: 8px;
+        font-size: 14pt;
+    }
 
     p {
-        font-size: 14pt;
+        font-size: 12pt;
         line-height: 1.6;
         color: #ffffff;
     }

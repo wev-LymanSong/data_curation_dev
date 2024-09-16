@@ -41,7 +41,9 @@ class DatabricksConnector(object):
 
     def get_batch_table(self, from_date, to_date, target_schema, target_table_type):
         table_q = f"""
-        select distinct target_type, entity_type, source_type, source_table_full_name, source_table_schema, source_table_name, target_table_full_name, target_table_schema, target_table_name
+        select distinct
+          source_type, source_table_full_name, source_table_schema, source_table_name
+        , target_type, target_table_full_name, target_table_schema, target_table_name
         from system.access.table_lineage
         where 1=1
         and event_date between '{from_date}' and '{to_date}'

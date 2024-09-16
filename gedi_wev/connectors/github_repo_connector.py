@@ -319,6 +319,7 @@ class GithubConnector(object):
         df.to_csv(os.path.join(DATA_DIR, file_name + ".csv"))
         return df
     def switch_table_dir_to_url(self, table_dir):
+        table_dir = table_dir.replace("\\", "/") # Windows path compatibility
         url = f"https://github.com/{self.owner}/{self.repo_name}/blob/{self.branch}/src/" + table_dir.split("/src/")[-1]
         if url.endswith(".py"):
             return url
@@ -326,6 +327,7 @@ class GithubConnector(object):
             return url + ".py"
     def switch_dag_dir_to_url(self, dag_id):
         url = os.path.join(f"https://github.com/{self.owner}/{self.repo_name}/blob/{self.branch}", DAG_DIR, dag_id)
+        url = url.replace("\\", "/")  # Windows path compatibility
         if url.endswith(".py"):
             return url
         else:
