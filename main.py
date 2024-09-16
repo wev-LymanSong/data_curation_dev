@@ -5,7 +5,8 @@ from specification_builder import SpecificationBuilder
 
 
 # for target_table in target_table_list:
-target_table = 'ws_album'
+target_table = 'wv_dm_subscr_daily'
 
 spec_builder = SpecificationBuilder(target_table=target_table)
 spec_builder.collect_static_data()
+spec_builder.build_mdfile()

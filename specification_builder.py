@@ -220,6 +220,10 @@ class SpecificationBuilder(object):
         target_table = target_table_dir.split("/")[-1]
         if target_table.endswith(".md"):
             target_table = target_table.split(".")[-1]
+
+        with open(target_table_dir, "r", encoding="utf-8") as file:
+            markdown_content = file.read()
+        tokens = self.md.parse(markdown_content)
         
         # self.basic_info = None
         # self.change_history = None
@@ -231,3 +235,54 @@ class SpecificationBuilder(object):
         # self.dep_table_list = None
         # self.dep_down_table_info = " "
         pass
+
+target_table_dir = os.path.join(SPEC_DIR, 'wa_album' + ".md")
+md = MarkdownIt()
+with open(target_table_dir, "r", encoding="utf-8") as file:
+    markdown_content = file.read()
+tokens = md.parse(markdown_content)
+
+valid_tokens = [t for t in tokens if t.children is not None]
+
+is_basic_info = False
+is_change_history = False
+is_table_notice = False
+is_column_info = False
+is_how_to_use = False
+is_batch_info = False
+is_locations = False
+is_dep_table_list = False
+is_dep_down_table_info = False
+
+for token in valid_tokens:
+    for c in token.children:
+        if c.content == "BASIC INFO":
+            is_basic_info = True 
+            break
+        elif c.content == "Change History":
+            is_change_history = True
+            break
+        elif c.content == "TABLE NOTICE":
+            is_table_notice = True
+            break
+        elif c.content == "COLUMN INFO":
+            is_column_info = True
+            break
+        elif c.content == "HOW TO USE":
+            is_how_to_use = True
+            break
+        elif c.content == "⌛️ BATCH":
+            is_batch_info = True
+            break
+        elif c.content == "📍 LINK URLs":
+            is_locations = True
+            break
+        elif "Up/Downstream Table List" in c.content:
+            is_dep_table_list = True
+            break
+        elif "Downstream Table Info" in c.content:
+            is_dep_down_table_info = True
+            break
+
+
+
