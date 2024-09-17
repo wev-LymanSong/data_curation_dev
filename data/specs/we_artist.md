@@ -60,7 +60,7 @@ we_mart.we_artist
   
 # TABLE NOTICE
   
-   
+  
 ---
 # COLUMN INFO
 
@@ -116,7 +116,7 @@ we_mart.we_artist
 ---
 # HOW TO USE
   
-   
+  
 ---
 # PIPELINE INFO
 
@@ -259,6 +259,4 @@ we_mart.we_artist
 
 ## 🐤 Downstream Tables Info
   
-   
 ---  
----

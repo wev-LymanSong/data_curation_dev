@@ -74,6 +74,23 @@ class TableGenerator(object):
             "table" : table_obj
         }
     
+    @staticmethod
+    def parse_markdown_table(markdown_table):
+        # 줄 단위로 분리
+        lines = markdown_table.strip().split('\n')
+        
+        # 헤더 행 추출 및 처리
+        header_row = [cell for cell in lines[0].split('|') if cell != '']
+        
+        # 본문 행 추출 및 처리
+        body_rows = []
+        for line in lines[2:]:  # 구분선 (두 번째 줄) 건너뛰기
+            cells = [cell for cell in line.split('|') if cell != '']
+            if cells:  # 빈 줄 무시
+                body_rows.append(cells)
+        
+        return header_row, body_rows
+    
     def table_patch(self, page_id:str, table:Dict):
         table = {
             "children": [table]

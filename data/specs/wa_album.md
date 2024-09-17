@@ -1,3 +1,4 @@
+
 we_mart.wa_album
 ================
 
@@ -12,7 +13,7 @@ we_mart.wa_album
 |**Created By**|송재영|
 |**Last Updated By**|송재영|
 |**Collaborators**|송재영[27], 구민서[1]|
-
+  
 #### Change History
 |**Date**|**By**|**LINK**|
 | :--- | :--- | :--- |
@@ -44,9 +45,10 @@ we_mart.wa_album
 |2023-12-07|송재영|[PR](https://github.com/benxcorp/databricks/commit/d290f42623ec72f10e5f64a14c4abc30d5f59064)|
 |2023-12-08|송재영|[PR](https://github.com/benxcorp/databricks/commit/600724bddae06714d5ef1bbd845af02590b67cc9)|
 |2023-12-08|송재영|[PR](https://github.com/benxcorp/databricks/commit/dfde24c37d13bbad2613f20c15a7b9905260897b)|
-
-
+  
+  
 # TABLE NOTICE
+  
 ### 테이블 개요
 
 * **테이블 목적**: 위버스 앨범과 위버스샵 앨범 메타 정보를 통합하여 매칭된 앨범 정보를 제공
@@ -96,8 +98,7 @@ we_mart.wa_album
 *   `we_art_id`는 위버스 플랫폼 내 통합 아티스트 ID
 *   `weverse_album_sale_ids`는 위버스 앨범 판매와 관련된 `sale_id` 목록
 *   `physical_album_sale_ids`는 실물 앨범 판매와 관련된 `sale_id` 목록
-*   `sale_ids`는 `weverse_album_sale_ids`과 `physical_album_sale_ids`을 모두 포함 하는 `sale_id` 목록
-
+*   `sale_ids`는 `weverse_album_sale_ids`과 `physical_album_sale_ids`을 모두 포함 하는 `sale_id` 목록  
 ---
 # COLUMN INFO
 
@@ -118,10 +119,11 @@ we_mart.wa_album
 |12|sale_ids|array<bigint>|앨범과 관련된 모든 sale_id 리스트|
 |13|weverse_album_sale_ids|array<bigint>|위버스 앨범 sale_id 리스트|
 |14|physical_album_sale_ids|array<bigint>|실물 앨범 sale_id 리스트|
-
-
+  
+    
 ---
 # HOW TO USE
+  
 ### Downstream Table/View
 - 위버스 앨범 정보와 Weverse Shop 앨범 정보를 조인하여 통합 앨범 테이블 생성
     - ```sql
@@ -244,8 +246,7 @@ we_mart.wa_album
       where wa.we_art_name = 'ARTIST'
       and wa.weverse_album_sale_ids is not null
       order by wa.wa_release_date desc
-      ```
-
+      ```  
 ---
 # PIPELINE INFO
 
@@ -257,14 +258,13 @@ we_mart.wa_album
 
 ### Update Type: OVERWRITE
 
-
 ## 📍 LINK URLs
 
-### Github: [Source Code](https://github.com/benxcorp/databricks/blob/main/src/c:\Users\thdwo\Documents\Github\databricks\src/data_analytics\mart/we_mart\wa_album.py)
+### Github: [Source Code](https://github.com/benxcorp/databricks/blob/main/src/data_analytics/mart/we_mart/wa_album.py)
 
-### Airflow: [DAG](https://github.com/benxcorp/databricks/blob/main/src/c:\Users\thdwo\Documents\Github\databricks\src/data_analytics\mart/we_mart\wa_album.py)
-
-
+### Airflow: [DAG](https://github.com/benxcorp/dp-airflow/blob/main/dags/utils/dynamic_dag/wev/task_list/analytics_ws_mart_daily.py)
+  
+    
 ---
 # DEPENDENCIES
 
@@ -282,7 +282,8 @@ we_mart.wa_album
 |wecode.tb_entity_meta| |
 
 ## 🐤 Downstream Tables Info
-
-
----
+  
+---  
+---  
+---  
 ---

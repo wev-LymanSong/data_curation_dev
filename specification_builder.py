@@ -1,5 +1,7 @@
 from configurations import *
 from static_data_collector import StaticDataCollector
+from gedi_wev.utils.table_generator import TableGenerator
+from gedi_wev.utils.parser_utils import slice_content
 from markdown_it import MarkdownIt
 from mdutils.mdutils import MdUtils
 from itertools import zip_longest
@@ -215,74 +217,99 @@ class SpecificationBuilder(object):
     def print_table_info(self):
         print(f"Current Target Table:({self.self.TARGET_FIELD.upper()}) {self.TARGET_DB}.{self.TARGET_TABLE:<20}")
 
-    def read_mdfile(self, target_table_dir):
-        target_table_dir = target_table_dir.replace("\\", "/")
-        target_table = target_table_dir.split("/")[-1]
-        if target_table.endswith(".md"):
-            target_table = target_table.split(".")[-1]
+    def read_mdfile(self):
+        target_table_dir = os.path.join(SPEC_DIR, self.TARGET_TABLE + ".md").replace("\\", "/")
 
         with open(target_table_dir, "r", encoding="utf-8") as file:
-            markdown_content = file.read()
-        tokens = self.md.parse(markdown_content)
+            content = file.read()
+        sections = {
+            'BASIC INFO': None,
+            'Change History': None,
+            'TABLE NOTICE': " ",
+            'COLUMN INFO': None,
+            'HOW TO USE': " ",
+            'PIPELINE INFO': None,
+            'DEPENDENCIES': None
+        }
+
+        current_section = None
+        section_content = []
+
+        for line in content.split('\n'):
+            if line.startswith('# ') or line.strip() == "#### Change History":
+                if current_section:
+                    sections[current_section] = '\n'.join(section_content).strip()
+                current_section = line.split("# ")[-1].strip()
+                section_content = []
+            elif current_section:
+                if line == "---":
+                    continue
+                section_content.append(line)
+
+        if current_section:
+            sections[current_section] = '\n'.join(section_content).strip()
+
+        self.basic_info = TableGenerator.parse_markdown_table(sections['BASIC INFO'])
+        self.change_history = TableGenerator.parse_markdown_table(sections['Change History'])
+        self.table_notice = sections['TABLE NOTICE']
+        column_info = TableGenerator.parse_markdown_table(sections['COLUMN INFO'])
+        rows = [[int(row[0])] + row[1:] for row in column_info[1]]
+
+        for row in rows:
+            if len(row) < 4:
+                row.append("")
+                
+        self.column_info = (column_info[0], rows)
+        self.how_to_use = sections['HOW TO USE']
+        batch_info = sections['PIPELINE INFO']
+
+        # DEPENDENCIES 섹션 파싱
+        dependencies = sections['DEPENDENCIES']
+        dep_table_list = None
+        dep_down_table_info = " "
+
+        if dependencies:
+            dep_sections = re.split(r'##\s+', dependencies)
+            for section in dep_sections:
+                if section.startswith('👨‍👩‍👧‍👦 Up/Downstream Table List'):
+                    dep_table_list = section.split('\n', 1)[1].strip()
+                elif section.startswith('🐤 Downstream Tables Info'):
+                    dep_down_table_info = section.split('\n', 1)[1].strip()
+
+        # PIPELINE INFO 섹션에서 locations 정보 추출
+        locations = None
         
-        # self.basic_info = None
-        # self.change_history = None
-        # self.table_notice = " "
-        # self.column_info = None
-        # self.how_to_use = " "
-        # self.batch_info = None
-        # self.locations = None
-        # self.dep_table_list = None
-        # self.dep_down_table_info = " "
-        pass
-
-target_table_dir = os.path.join(SPEC_DIR, 'wa_album' + ".md")
-md = MarkdownIt()
-with open(target_table_dir, "r", encoding="utf-8") as file:
-    markdown_content = file.read()
-tokens = md.parse(markdown_content)
-
-valid_tokens = [t for t in tokens if t.children is not None]
-
-is_basic_info = False
-is_change_history = False
-is_table_notice = False
-is_column_info = False
-is_how_to_use = False
-is_batch_info = False
-is_locations = False
-is_dep_table_list = False
-is_dep_down_table_info = False
-
-for token in valid_tokens:
-    for c in token.children:
-        if c.content == "BASIC INFO":
-            is_basic_info = True 
-            break
-        elif c.content == "Change History":
-            is_change_history = True
-            break
-        elif c.content == "TABLE NOTICE":
-            is_table_notice = True
-            break
-        elif c.content == "COLUMN INFO":
-            is_column_info = True
-            break
-        elif c.content == "HOW TO USE":
-            is_how_to_use = True
-            break
-        elif c.content == "⌛️ BATCH":
-            is_batch_info = True
-            break
-        elif c.content == "📍 LINK URLs":
-            is_locations = True
-            break
-        elif "Up/Downstream Table List" in c.content:
-            is_dep_table_list = True
-            break
-        elif "Downstream Table Info" in c.content:
-            is_dep_down_table_info = True
-            break
-
-
-
+        if batch_info:
+            location_match = re.search(r'## 📍 LINK URLs\n\n(.*?)\n\n', batch_info, re.DOTALL)
+            if location_match:
+                locations = location_match.group(1)
+        ls = [l.strip("\n").strip() for l in batch_info.split("##") if l != '']
+        
+        batch_infos = None
+        link_pattern = r'\[(.*?)\]\((.*?)\)'
+        for i, l in enumerate(ls):
+            if l.startswith("#") == False:
+                if i == 0:
+                    1==1
+                else:
+                    batch_infos = keywords
+                keywords = []
+            else:
+                if batch_infos is None:
+                    keywords.append(''.join(l.split(":")[1:]).strip())
+                else:
+                    matches = re.findall(link_pattern, l)
+                    for match in matches:
+                        keywords.append(match)
+        
+        self.batch_info = batch_infos
+        print(keywords)
+        if len(keywords) == 2:
+            self.locations = (keywords[0][1], [k[1] for k in keywords[1:]])
+        else:
+            self.locations = (keywords[0][1], [f"[{k[0]}]({k[1]})" for k in keywords[1:]])
+        self.dep_table_list = TableGenerator.parse_markdown_table(dep_table_list)
+        self.dep_down_table_info = dep_down_table_info
+        
+sb = SpecificationBuilder("wa_album")
+sb.read_mdfile()
