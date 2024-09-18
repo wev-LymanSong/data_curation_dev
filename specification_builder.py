@@ -1,5 +1,6 @@
 from configurations import *
 from static_data_collector import StaticDataCollector
+from semantic_info_generator import SemanticInfoGenerator
 from gedi_wev.utils.table_generator import TableGenerator
 from gedi_wev.utils.parser_utils import slice_content
 from markdown_it import MarkdownIt
@@ -51,6 +52,7 @@ class SpecificationBuilder(object):
         
         # Static DataFrames and info dicts: Get static data associated with the target table from StaticDataCollector.
         self.sdc = StaticDataCollector(self.TARGET_FIELD, self.TARGET_DB, self.TARGET_TABLE)
+        self.sig = SemanticInfoGenerator(self.TARGET_TABLE)
         self.code_df = self.sdc.get_code_blocks()
         self.basic_info, self.settings = self.sdc.get_basic_info_settings(code_df=self.code_df)
         self.change_df, self.author_counts = self.sdc.get_file_change_history()
@@ -59,13 +61,13 @@ class SpecificationBuilder(object):
         # Initiate sepcification Features
         self.basic_info = None
         self.change_history = None
-        self.table_notice = " "
+        self.table_notice = "No content."
         self.column_info = None
-        self.how_to_use = " "
+        self.how_to_use = "No content."
         self.batch_info = None
         self.locations = None
         self.dep_table_list = None
-        self.dep_down_table_info = " "
+        self.dep_down_table_info = "No content."
 
     def collect_static_data(self):
         # BASIC INFO
@@ -144,6 +146,14 @@ class SpecificationBuilder(object):
         for i, j in zip_longest(UPSTREAM_TABLES, DOWNSTREAM_TABLES):
             dep_tl_rows.append([i if i is not None else ' ', j if j is not None else ' '])
         self.dep_table_list = (dep_tl_header, dep_tl_rows)
+    
+    def generate_semantic_data(self, target_section):
+        if target_section == "TABLE_NOTICE":
+            self.table_notice = self.sig.get_table_notice()
+        elif target_section == 'HOW_TO_USE':
+            self.how_to_use = self.sig.get_how_to_use()
+        elif target_section == 'DOWNSTREAM_TABLE_INFO':
+            self.dep_down_table_info = " "
 
     def build_mdfile(self):
         self.mdFile = MdUtils(file_name=self.TARGET_TABLE, title=f"{self.TARGET_DB}.{self.TARGET_TABLE}")
@@ -209,9 +219,9 @@ class SpecificationBuilder(object):
         self.mdFile.new_line("---")
 
         # File save
-        self.mdFile.new_line("---")
         os.chdir(SPEC_DIR)
         self.mdFile.create_md_file()
+        os.chdir(BASE_DIR)
 
         
     def print_table_info(self):
@@ -311,5 +321,8 @@ class SpecificationBuilder(object):
         self.dep_table_list = TableGenerator.parse_markdown_table(dep_table_list)
         self.dep_down_table_info = dep_down_table_info
         
-sb = SpecificationBuilder("wa_album")
-sb.read_mdfile()
+# sb = SpecificationBuilder("wv_order")
+# sb.collect_static_data()
+# sb.generate_semantic_data("TABLE_NOTICE")
+# sb.generate_semantic_data("HOW_TO_USE")
+# sb.build_mdfile()

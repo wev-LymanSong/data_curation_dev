@@ -1,4 +1,3 @@
-
 we_mart.we_artist
 =================
 
@@ -13,7 +12,7 @@ we_mart.we_artist
 |**Created By**|윤상혁|
 |**Last Updated By**|윤상혁|
 |**Collaborators**|윤상혁[35], 구민서[1], 송재영[1], 구민서[1], 박상민[1]|
-  
+
 #### Change History
 |**Date**|**By**|**LINK**|
 | :--- | :--- | :--- |
@@ -56,11 +55,11 @@ we_mart.we_artist
 |2024-04-03|윤상혁|[PR](https://github.com/benxcorp/databricks/commit/2bac839412577ffbcb8c9156fbd3d2f4c582509c)|
 |2024-05-23|윤상혁|[PR](https://github.com/benxcorp/databricks/commit/4b2f1f5a4966ae656b692b0301148bd99122b5aa)|
 |2024-08-02|윤상혁|[PR](https://github.com/benxcorp/databricks/commit/6ce07784205014b06a81e0bf90c8709f286470e7)|
-  
-  
+
+
 # TABLE NOTICE
-  
-  
+
+
 ---
 # COLUMN INFO
 
@@ -111,12 +110,12 @@ we_mart.we_artist
 |42|company_name|string|레이블명|
 |43|group_tag|array<string>|분석용 태그|
 |44|ctry_code|string|아티스트 국가|
-  
-    
+
+
 ---
 # HOW TO USE
-  
-  
+
+
 ---
 # PIPELINE INFO
 
@@ -136,8 +135,8 @@ we_mart.we_artist
 
 - [analytics_ws_mart_daily](https://github.com/benxcorp/dp-airflow/blob/main/dags/utils/dynamic_dag/wev/task_list/analytics_ws_mart_daily.py)
 - [analytics_wv_mart_daily](https://github.com/benxcorp/dp-airflow/blob/main/dags/utils/dynamic_dag/wev/task_list/analytics_wv_mart_daily.py)
-  
-    
+
+
 ---
 # DEPENDENCIES
 
@@ -258,5 +257,5 @@ we_mart.we_artist
 | |we_meta.wv_ops_event|
 
 ## 🐤 Downstream Tables Info
-  
----  
+
+---

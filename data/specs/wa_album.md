@@ -283,7 +283,6 @@ we_mart.wa_album
 
 ## 🐤 Downstream Tables Info
   
----  
----  
----  
+- fd a
+  - fd
 ---

@@ -1,4 +1,3 @@
-
 we_mart.wv_media
 ================
 
@@ -13,7 +12,7 @@ we_mart.wv_media
 |**Created By**|박상민|
 |**Last Updated By**|임혜경|
 |**Collaborators**|송재영[23], 박상민[5], 임혜경[4], 윤상혁[2], 구민서[1], 이현지[1]|
-  
+
 #### Change History
 |**Date**|**By**|**LINK**|
 | :--- | :--- | :--- |
@@ -53,11 +52,70 @@ we_mart.wv_media
 |2024-04-19|임혜경|[PR](https://github.com/benxcorp/databricks/commit/271d69a35739fa0a84c9a65293cff3f935bff871)|
 |2024-07-03|임혜경|[PR](https://github.com/benxcorp/databricks/commit/075428504a65f49ab92bb5d5d49e004a7375cd99)|
 |2024-07-30|임혜경|[PR](https://github.com/benxcorp/databricks/commit/b8d8ef804751387e3681d01dbf2fe3926a89038a)|
-  
-  
+
+
 # TABLE NOTICE
-  
-    
+
+### 테이블 개요
+
+* **테이블 목적**: Weverse 플랫폼 내 미디어 정보와 관련된 메타 데이터를 저장
+* **데이터 레벨**: 집계된 데이터
+* **파티션 키**: `part_date`
+* **주요 키**: `post_id`, `media_id`
+
+### 테이블 특징
+* Weverse 플랫폼 내 게시글의 미디어 유형, 제목, 카테고리, 그룹 정보 등을 포함
+* 비디오, 사진, 유튜브 링크 등 다양한 미디어 유형을 지원
+* `media_cat_ids` 컬럼은 미디어 카테고리 ID를 배열 형태로 저장
+* `photo_ids` 컬럼은 게시글에 포함된 사진 ID를 배열 형태로 저장
+* `is_fc_only`, `is_photo`, `is_pitem`, `is_joint_live` 등의 플래그 컬럼을 통해 다양한 필터링 조건 제공
+
+### 데이터 추출 및 생성 과정
+
+1. **주요 데이터 소스**:
+    * `weverse2.community_content_post`: 게시글 정보
+    * `weverse2.community_content_post_photo_relation`: 게시글과 사진 간의 관계 정보
+    * `weverse2.community_content_photo`: 사진 정보
+    * `weverse2.community_common_wev_id`: Weverse ID 매핑 정보
+    * `weverse2.community_content_common_post_video_relation`: 게시글과 비디오 간의 관계 정보
+    * `weverse2.video_video`: 비디오 정보
+    * `weverse2.video_vod`: VOD 정보
+    * `weverse2.video_vod_audit`: VOD 등급 정보
+    * `we_mart.we_artist`: 아티스트 정보
+2. **데이터 전처리**:
+    * `weverse2.community_content_post` 테이블에서 미디어 정보를 포함하는 게시글만 필터링
+    * `get_json_object` 함수를 사용하여 JSON 형식의 데이터에서 필요한 필드 추출
+    * `split` 함수를 사용하여 문자열을 분리하여 필요한 정보 추출
+    * `array_distinct` 함수를 사용하여 중복된 값을 제거
+    * `timestamp` 함수를 사용하여 Unix 타임스탬프를 KST 시간으로 변환
+    * `case when` 조건문을 사용하여 특정 조건에 따라 컬럼 값을 변환
+3. **데이터 통합**:
+    * `left join`을 사용하여 다양한 테이블을 결합하여 미디어 정보를 통합
+4. **최종 테이블 생성**:
+    * `create or replace temp view` 문을 사용하여 임시 뷰 생성
+    * `spark.sql(agg_q)`를 사용하여 최종 테이블 생성
+
+### 테이블 활용 가이드
+
+* **주요 활용**:
+    * Weverse 플랫폼 내 미디어 정보 분석
+    * 미디어 유형별, 카테고리별, 아티스트별 미디어 데이터 분석
+    * 미디어 노출, 재생, 댓글, 응원 등 미디어 활동 분석
+* **조인 시 유의사항**:
+    * `comm_id` 컬럼을 사용하여 `we_mart.we_artist` 테이블과 조인하여 아티스트 정보를 추가
+    * `media_id` 컬럼을 사용하여 `weverse2.community_common_wev_id` 테이블과 조인하여 Weverse ID 정보를 추가
+    * `video_id` 컬럼을 사용하여 `weverse2.video_video` 테이블과 조인하여 비디오 상세 정보를 추가
+
+### 추가 정보
+
+* `media_cat_ids` 컬럼은 `we_mart.wv_media_cat` 테이블과 조인 가능
+* `photo_ids` 컬럼은 `we_mart.wv_photo` 테이블과 조인 가능
+* `is_fc_only` 컬럼은 멤버십 전용 미디어 여부를 나타냄
+* `is_joint_live` 컬럼은 합동 라이브 여부를 나타냄
+* `media_dur` 컬럼은 미디어 재생 시간을 나타냄
+* `play_count` 컬럼은 미디어 재생 횟수를 나타냄
+* `comment_count` 컬럼은 미디어 댓글 수를 나타냄
+* `emotion_count` 컬럼은 미디어 응원 수를 나타냄
 ---
 # COLUMN INFO
 
@@ -101,12 +159,141 @@ we_mart.wv_media
 |35|media_upd_dt|timestamp|미디어 수정 일시|
 |36|media_rel_dt|timestamp|미디어 노출 일시|
 |37|part_date|string|파티션 일자|
-  
-    
+
+
 ---
 # HOW TO USE
-  
-    
+
+### Downstream Table/View
+- `wv_media` 테이블을 사용하여 아티스트별 미디어 카테고리별 총 미디어 수를 집계하는 `stats_wv_d_media_cnt` 테이블 생성
+    - ```sql
+      create or replace table we_mart.stats_wv_d_media_cnt
+      (
+          key_date date comment "집계 기준 날짜",
+          we_art_id int comment "아티스트 고유 ID",
+          we_art_name string comment "아티스트 명",
+          media_cat_id int comment "미디어 카테고리 ID",
+          media_cat_name string comment "미디어 카테고리 명",
+          total_cnt bigint comment "해당 아티스트의 해당 카테고리에 속하는 미디어 수"
+      )
+      using delta
+      comment "일간 아티스트별 미디어 카테고리별 총 미디어 수 집계"
+      ;
+      ```
+    - ```sql
+      insert into we_mart.stats_wv_d_media_cnt
+      select
+          date(MED.part_date) as key_date,
+          MED.we_art_id,
+          MED.we_art_name,
+          MED.media_cat_id,
+          MED.media_cat_name,
+          count(distinct MED.post_id) as total_cnt
+      from we_mart.wv_media as MED
+      group by 1,2,3,4,5
+      ;
+      ```
+- `wv_media` 테이블을 사용하여 아티스트별 미디어 종류별 총 미디어 수를 집계하는 `stats_wv_d_media_type_cnt` 테이블 생성
+    - ```sql
+      create or replace table we_mart.stats_wv_d_media_type_cnt
+      (
+          key_date date comment "집계 기준 날짜",
+          we_art_id int comment "아티스트 고유 ID",
+          we_art_name string comment "아티스트 명",
+          media_type string comment "미디어 종류",
+          total_cnt bigint comment "해당 아티스트의 해당 미디어 종류에 속하는 미디어 수"
+      )
+      using delta
+      comment "일간 아티스트별 미디어 종류별 총 미디어 수 집계"
+      ;
+      ```
+    - ```sql
+      insert into we_mart.stats_wv_d_media_type_cnt
+      select
+          date(MED.part_date) as key_date,
+          MED.we_art_id,
+          MED.we_art_name,
+          MED.media_type,
+          count(distinct MED.post_id) as total_cnt
+      from we_mart.wv_media as MED
+      group by 1,2,3,4
+      ;
+      ```
+- `wv_media` 테이블을 사용하여 아티스트별 미디어 카테고리별 총 유저 활동 수를 집계하는 `stats_wv_d_media_activity_by_cat` 뷰 생성
+    - ```sql
+      create or replace view we_mart.stats_wv_d_media_activity_by_cat
+      as
+      select
+          date(MED.part_date) as key_date,
+          MED.we_art_id,
+          MED.we_art_name,
+          MED.media_cat_id,
+          MED.media_cat_name,
+          count(distinct ACT.we_member_id) as total_user_cnt
+      from we_mart.wv_media as MED
+      left join we_mart.wv_video_play as ACT
+      on MED.post_id = ACT.post_id
+      and MED.part_date = ACT.part_date
+      where ACT.key_date = '2024-01-01'
+      group by 1,2,3,4,5
+      ;
+      ```
+### Data Extraction
+- `2024-01-01` 기준으로 `ARTIST`의 `MEDIA_CATEGORY`에 속하는 모든 미디어의 정보 추출
+    - ```sql
+      select
+          post_id,
+          media_id,
+          media_name,
+          media_type,
+          media_cat_id,
+          media_cat_name,
+          media_rel_dt,
+          media_dur,
+          is_fc_only,
+          is_pitem,
+          is_photo
+      from we_mart.wv_media
+      where
+          part_date = '2024-01-01'
+          and we_art_name = 'ARTIST'
+          and media_cat_name = 'MEDIA_CATEGORY'
+      ;
+      ```
+- `2024-01-01` 기준으로 `ARTIST`의 `MEDIA_CATEGORY`에 속하는 모든 미디어의 정보 중, 유료 컨텐츠의 개수를 파악
+    - ```sql
+      select
+          count(distinct post_id)
+      from we_mart.wv_media
+      where
+          part_date = '2024-01-01'
+          and we_art_name = 'ARTIST'
+          and media_cat_name = 'MEDIA_CATEGORY'
+          and is_pitem = 1
+      ;
+      ```
+- `2024-01-01` 기준으로 `ARTIST`의 `MEDIA_CATEGORY`에 속하는 모든 미디어 중, 최근 1개월 이내에 생성된 미디어 정보 추출
+    - ```sql
+      select
+          post_id,
+          media_id,
+          media_name,
+          media_type,
+          media_cat_id,
+          media_cat_name,
+          media_rel_dt,
+          media_dur,
+          is_fc_only,
+          is_pitem,
+          is_photo
+      from we_mart.wv_media
+      where
+          part_date = '2024-01-01'
+          and we_art_name = 'ARTIST'
+          and media_cat_name = 'MEDIA_CATEGORY'
+          and media_rel_dt >= date('2024-01-01') - interval '1' month
+      ;
+      ```
 ---
 # PIPELINE INFO
 
@@ -117,15 +304,14 @@ we_mart.wv_media
 ### Update Interval: DAILY
 
 ### Update Type: APPEND
-  
-  
+
 ## 📍 LINK URLs
 
-### Github: [Source Code](https://github.com/benxcorp/databricks/blob/main/src/c:\Users\thdwo\Documents\Github\databricks\src/data_analytics\mart/we_mart\wv_media.py)
+### Github: [Source Code](https://github.com/benxcorp/databricks/blob/main/src/data_analytics/mart/we_mart/wv_media.py)
 
-### Airflow: [DAG](https://github.com/benxcorp/databricks/blob/main/src/c:\Users\thdwo\Documents\Github\databricks\src/data_analytics\mart/we_mart\wv_media.py)
-  
-    
+### Airflow: [DAG](https://github.com/benxcorp/dp-airflow/blob/main/dags/utils/dynamic_dag/wev/task_list/analytics_wv_mart_daily.py)
+
+
 ---
 # DEPENDENCIES
 
@@ -144,7 +330,6 @@ we_mart.wv_media
 |weverse2.video_vod_audit|we_mart.wv_vod_play|
 
 ## 🐤 Downstream Tables Info
-  
-    
----  
+
+No content.
 ---

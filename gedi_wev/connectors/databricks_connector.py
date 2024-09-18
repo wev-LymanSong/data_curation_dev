@@ -140,7 +140,7 @@ class DatabricksConnector(object):
             3. 추출된 정보를 딕셔너리 형태로 반환
         """
         code_blocks = dict()
-
+        source_code_cells = source_code_cells.replace("\r", "")
         if source_code_lang == 'SQL': # SQL 타입의 노트북: 추출 쿼리 or 인사이트 뷰 생성 쿼리
             default_cell_type = 'sql'
             lines = source_code_cells.split(CELL_SEPARATOR_SQL) #셀 별로 나누기
@@ -177,7 +177,10 @@ class DatabricksConnector(object):
             ## MAGIC COMMAND 처리
             if cell[:len(MAGIC_KEYWORD)] == MAGIC_KEYWORD: # 메직 커멘드가 적용된 셀 처리
                 start_idx = cell.index("%") + 1
-                end_idx = cell.index("\n")
+                try:
+                    end_idx = cell.index("\n")
+                except:
+                    end_idx = cell.index(" ")
                 cell_type = cell[start_idx:end_idx] # 언어 값을 파싱
                 codes = cell[end_idx + 1:].replace(MAGIC_KEYWORD, "") # 나머지 MAGIC들은 지워줌
             else: # 매직 커멘드가 적용 안된 셀은 기본 언어로 설정
