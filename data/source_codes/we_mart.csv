@@ -1,39 +1,31 @@
 ,cell_type,cell_title,role,codes
-1,md,,just_heading,### we_mart.wv_med
-2,md,,basic_info,"#### Basic Info
-* 위버스 내 미디어들의 메타정보
-* meta data 
-* DAILY Append
+1,md,,basic_info,"#### Basic Info
+* 위버스 앨범 메타 정보
+* Mart Primary 
+* DAILY OVERWRITE
+* WIKI : [LINK](https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/3412689812/we+mart.wa+album) 
+* 기타 : 위버스 앨범 앱에 등록된 앨범들의 메타 테이블, 위버스 샵 앨범 메타와 연계
 
 ###### history
 |Date |Contributor|Comment|
 |:-------|:-------|:---------------------|
-|2024-07-30 |임혜경|유튜브 id 추가 (api호출목적)|
-|2024-07-03 |임혜경|썸네일 url 추가|
-|2024-04-19 |임혜경|합동 라이브 유무 추가|
-|2024-01-02 |임혜경|영상 등급 추가|
-|2022-07-18 |송재영|weverse2로 전체 변경|
-|2022-04-29 |송재영|sale_id 어레이로 변경|
-|2022-03-14 |송재영|fivetran과 연결 변경, paid_item_id와 sale_id 연결 정보 추가|
-|2022-01-04 |박상민|svod paid_item 추가/ 컬럼추가: sale_id, sale_price, pay_method|
-|2021-11-10 |박상민|마트생성/배치생성|
-
+|2022-09-22 |송재영|마트생성|
+|2022-09-23|송재영|sale_ids 컬럼 추가|
+|2022-12-05|송재영|앨범 메타 소스 테이블 변경(we_mart.ws_album => we_meta.wa_album)|
+|2023-04-30|송재영|하나의 ws_album에 두개의 wa_album이 연결되는 케이스 발생, ws_album left join wa_album이 아닌 wa_album left join ws_album으로 변경|
+|2023-12-07|송재영|WECODE를 활용해 아티스트 정보 맵핑, text similarity를 이용해 ws_album과 맵핑 변경|
 
 ###### Source Tables
-* weverse2.community_content_post
-* weverse2.community_content_post_photo_relation
-* weverse2.community_content_photo
-* weverse2.community_common_product
-* weverse2.community_content_common_post_video_relation
-* weverse2.video_video
-* weverse2.video_vod
-* we_mart.we_artist
-* weverse2.video_vod_audit"
-3,md,,just_heading,#### Settings
-4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
-5,py,,setting,"import pyspark.sql.functions as f
-
-key = dbutils.widgets.get(""target_date"")
+* we_meta.ws_album
+* album.album
+* album.artist
+* album.user_album_reg
+* wecode.tb_entity
+* wecode.tb_entity_meta
+* coupon.tb_cp_used
+* coupon.tb_cp_pl"
+2,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+3,py,,setting,"key = dbutils.widgets.get(""target_date"")
 run_mode = dbutils.widgets.get(""run_mode"")
 
 slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
@@ -45,246 +37,179 @@ noti = {
 }
 table = {
   'database' : 'we_mart',
-  'table_name' : 'wv_media', 
-  'service' : None, #default (None)
-  'partition' : ['part_date']
+  'table_name' : 'wa_album', 
+  'service' : 'weverse album', #default (None)
 }
+
 option = {
-  'date' : key,
+  'date' : None,
   'format': 'delta', #default (delta)
-  'mode' : 'append', #default (append)
+  'mode' : 'overwrite', #default (append)
   'period' : 'daily', #default (daily)
   'noti' : True, #default (True)
-}"
-6,md ,,etc, #### Main Query
-7,md,,just_heading,##### Temp Views
-8,py,,code," reg_exp1 = r'[\"", \'\']'
- post_q = f""""""
- select 
- concat(shard_id, '-', post_local_id) as post_id
- , shard_id, post_local_id
- , comment_count, emotion_count
- , timestamp(from_unixtime(published_at/1000, 'yyyy-MM-dd HH:mm:ss')) + interval 9 hours as published_at
- , timestamp(from_unixtime(created_at/1000, 'yyyy-MM-dd HH:mm:ss')) + interval 9 hours as created_at
- , timestamp(from_unixtime(updated_at/1000, 'yyyy-MM-dd HH:mm:ss')) + interval 9 hours as updated_at
- , get_json_object(data, '$.sectionType') as section_type
- , get_json_object(data, '$.mediaInfo.mediaType') as media_type
- , cast(get_json_object(data, '$.communityId') as int) as community_id
- , case when get_json_object(data, '$.membershipOnly') = 'true' then 1 else 0 end as is_fc_only
- , get_json_object(data, '$.mediaInfo') as media_info
- , get_json_object(data, '$.image') as image_info
- , get_json_object(data, '$.video') as video_info
- , get_json_object(data, '$.youtube') as youtube_info
- , filter(split(get_json_object(data, '$.productIds'), '{reg_exp1}'), x -> regexp_like(x, r'\w')) as product_ids
- , case when data:coHostLive is not null then 1 else 0 end as is_joint_live
- from weverse2.community_content_post
- where get_json_object(data, '$.mediaInfo') is not null
- """"""
- spark.sql(post_q).createOrReplaceTempView('media')"
-9,py,,code,"media_detail_q = f""""""
-select distinct
--- POST INFO
-media.post_id, media.shard_id, media.post_local_id, media.comment_count, media.emotion_count
-, media.published_at, media.created_at, media.updated_at, media.section_type, media.media_type
-, media.community_id, media.is_fc_only
-, case when size(media.product_ids) < 1 then null else array_distinct(media.product_ids) end as product_ids 
-, media.is_joint_live
+}
 
--- MEDIA INFO
-, get_json_object(media_info, '$.internalTitle') as title_internal
-, get_json_object(media_info, '$.titles.values.ko') as title_ko
-, get_json_object(media_info, '$.titles.values.en') as title_en
-, get_json_object(media_info, '$.titles.values.ja') as title_ja 
-, get_json_object(media_info, '$.bodies') as body
-, get_json_object(media_info, '$.thumbnail.url') as url
-, get_json_object(media_info, '$.kewords') as keywords
--- , get_json_object(media_info, '$.categoryIds') as med_cat_ids
-, case when get_json_object(media_info, '$.categoryIds') = '[]' then null else array_distinct(cast(filter(split(get_json_object(media_info, '$.categoryIds'), r'[^0-9]'), x -> regexp_like(x, r'\d')) as array<int>)) end as media_category_ids
--- , get_json_object(media_info, '$.mediaGroupIds') as med_group_ids
-, case when get_json_object(media_info, '$.mediaGroupIds') = '[]' then null else array_distinct(cast(filter(split(get_json_object(media_info, '$.mediaGroupIds'), r'[^0-9]'), x -> regexp_like(x, r'\d')) as array<int>)) end as media_group_ids
-
--- VIDEO_INFO
-, get_json_object(video_info, '$.videoId') as video_id
-, case when get_json_object(video_info, '$.liveToVod') = 'true' then 1 else 0 end as is_live_to_vod
-, timestamp(from_unixtime(get_json_object(video_info, '$.onAirStartAt')/1000, 'yyyy-MM-dd HH:mm:ss')) + interval 9 hours as onair_started_at
-
--- YOUTUBE_INFO
-, get_json_object(youtube_info, '$.youtubeVideoId') as youtube_videoid
-, get_json_object(youtube_info, '$.videoPath') as youtube_path
-, get_json_object(youtube_info, '$.playTime') as play_time
-, get_json_object(youtube_info, '$.screenOrientation') as screen_orientation
-
--- IMAGE_INFO
--- , get_json_object(image_info, '$.viewType') as view_type
--- , get_json_object(c.value, '$.width') as width
--- , get_json_object(c.value, '$.height') as height
-, collect_set(c.id) over (partition by media.post_id) as photo_ids
-
-from media
-left join weverse2.community_content_post_photo_relation as b
-on media.post_id = b.post_id
-left join weverse2.community_content_photo as c
-on b.photo_id = concat(c.shard_id, '-', c.id)
-where community_id < 1000
-""""""
-spark.sql(media_detail_q).createOrReplaceTempView('media_detail')"
-10,py,,code,"wev1_q = """"""
-create or replace temp view WEV1 as 
-select cast(split(wev1, r'[-]')[1] as int) as media_id, split(wev2, r'[/]')[1] as post_id
-from weverse2.community_common_wev_id
-where split(wev1, r'[-]')[0] = 'MEDIA'
-order by media_id
-""""""
-spark.sql(wev1_q)"
-11,md,,just_heading,##### Aggregation
-12,py,,code,"agg_q = f""""""
-select distinct 
-  MEDD.post_id, WEV1.media_id, MEDD.section_type
-  , MEDD.media_type
-  , MEDD.title_internal as media_name
-  , MEDD.community_id as comm_id
-  , WEART.we_art_id
-  , WEART.we_art_name
-  , MEDD.is_fc_only
-  , case when MEDD.media_type = 'IMAGE' then 1 else 0 end as is_photo
--- , null as media_dur -- MEDD.playtime
-  , case when MEDD.product_ids is not null then 1 else 0 end as is_pitem
-  , MEDD.is_joint_live
-  
-  /*
-  20220812 fc_only 컨텐츠들은 미디어 카테고리가 없는 경우가 대다수이기에 -8888이라는 특정 id를 기존 어레이에 추가해줌, 차후 we_mart.wv_media_cat과 조인 가능
-  */
-  , case when MEDD.is_fc_only = 1 and section_type = 'MEDIA' then 
-         case when MEDD.media_category_ids is not null then array_union(MEDD.media_category_ids, array(-8888)) 
-         else array(-8888) end
-    else MEDD.media_category_ids end as media_cat_ids
-  , MEDD.media_group_ids
-  
--- video  
-  , VID.video_id
-  , VID.infra_video_id
-  , VID.type as video_type
-  , VID.preview_type
-  , VID.expose_status as video_expose_status
-  , VID.screen_orientation
---   , VID.paid
-  , VID.live_to_vod_status
---   , VID.live_chat_count
---   , VID.live_thumb_yn
---   , VID.membership_only
-  , timestamp(from_unixtime(VID.created_at/1000, 'yyyy-MM-dd HH:mm:ss')) + interval 9 hours as video_cre_dt
-  , case when VOD.video_id is not null then cast(VOD.play_time as int) when MEDD.media_type = 'YOUTUBE' then cast(MEDD.play_time as int) end as media_dur 
-  , VOD.preview_start
-  , VOD.preview_end
-  , MEDD.url as thumbnail_url
-  , MEDD.youtube_path
-  , MEDD.youtube_videoid
-
--- media rate
-  , RATE.rate_status
-  
--- photo
-  , case when size(MEDD.photo_ids) = 0 then null else MEDD.photo_ids end as photo_ids
-  , size(MEDD.photo_ids) as cnt_photo
-  
--- reaction
-  , VID.play_count
-  , MEDD.comment_count
-  , MEDD.emotion_count
-  
--- tiemstamps
-  , MEDD.created_at as media_cre_dt
-  , MEDD.updated_at as media_upd_dt
-  , MEDD.published_at as media_rel_dt
-  , '{key}' as part_date
-  from media_detail as MEDD
---   left join weverse2.community_content_common_product_media_relation as PROD_REL
---  on MEDD.post_id = PROD_REL.post_id
-  left join weverse2.community_content_common_post_video_relation as VIDEO_REL
-  on MEDD.post_id = VIDEO_REL.post_id
-  left join weverse2.video_video as VID
-  on MEDD.video_id = VID.video_id
-  left join weverse2.video_vod as VOD
-  on VID.video_id = VOD.video_id
-  left join we_mart.we_artist as WEART
-  on MEDD.community_id = WEART.comm_id
-  left join WEV1
-  on MEDD.post_id = WEV1.post_id
-  left join 
-  (
-    select video_id, rate_status
-    from weverse2.video_vod_audit 
-    where process_status = 'COMPLETE'
-    qualify row_number() over (partition by video_id order by updated_at desc) = 1
-  ) as RATE
-  on VID.video_id = cast(RATE.video_id as bigint)
+spark.sql('set time zone ""Asia/Seoul""')"
+4,py,,code,run_mode
+5,md,,just_heading,#### Main Query
+6,py,Wecode,code,"spark.sql(""""""
+    select a.id as entity_id, a.entity_code as wecode, a.we_art_id, d.we_art_id as parent_we_art_id, nvl(ART.we_art_name, ART_2.we_art_name) as master_we_art_name, nvl(d.we_art_id, a.we_art_id) as master_we_art_id
+    from wev_prod.wecode.tb_entity as a
+    left join wev_prod.wecode.tb_entity_meta as b
+    on a.id = b.entity_id
+    left join wev_prod.wecode.tb_entity_meta as c
+    on b.parent_id = c.id
+    left join wev_prod.wecode.tb_entity as d
+    on c.entity_id = d.id
+    left join wev_prod.we_mart.we_artist as ART
+    on d.we_art_id = ART.we_art_id
+    left join wev_prod.we_mart.we_artist as ART_2
+    on a.we_art_id = ART_2.we_art_id
+"""""").createOrReplaceTempView(""WE_CODE"")"
+7,py,Weverse Shop Album Meta Data,code,"ws_albums = spark.sql(f""""""
+  select a.we_art_id, a.we_art_name, a.album_id, a.album_release_date
+  , a.album_name
+  , collect_set(b.sale_id) as sale_ids
+  , collect_set(case when b.is_wa_included = 1 then sale_id end) as weverse_album_sale_ids
+  , collect_set(case when b.is_wa_included != 1 then sale_id end) as physical_album_sale_ids
+  from(
+    select distinct we_art_id, we_art_name, album_id, album_name, album_release_date
+    from we_meta.ws_album
+    where is_wa_included = 1
+    and part_date = '{key}'
+  ) as a
+  left join we_meta.ws_album as b
+  on a.album_name = b.album_name and b.part_date = '{key}'
+  group by 1, 2, 3, 4, 5
+  order by album_id desc
+"""""")"
+8,py,Coupon Meta,code,"spark.sql(f""""""
+select distinct album_id, collect_list(distinct PLAN.id) as cp_plan_ids
+  from album.user_album_reg as REG
+  left join coupon.tb_cp_used as USED
+  on REG.coupon_num =  USED.cp_cd
+  left join coupon.tb_cp_plan as PLAN
+  on USED.cp_plan_id = PLAN.id
+  where PLAN.is_test = 0
+  group by 1
+"""""").createOrReplaceTempView(""CP"")"
+9,py,"Merge(Albums, Wecode, Coupon)",code,"wa_albums = spark.sql(f""""""
+select 
+  WA_ALBUM.wa_album_id
+, WA_ALBUM.wa_album_name
+, WA_ALBUM.we_art_id
+, WA_ALBUM.we_art_name
+, WA_ALBUM.entity_we_art_id
+, WA_ALBUM.wa_artist_id
+, WA_ALBUM.wa_art_name
+, WA_ALBUM.wa_release_date
+, CP.cp_plan_ids
+from (
+  select int(ALBUM.album_id) as wa_album_id
+  , ALBUM.title as wa_album_name
+  , WE_CODE.master_we_art_id as we_art_id
+  , WE_CODE.master_we_art_name as we_art_name
+  , WE_CODE.we_art_id as entity_we_art_id
+  , ARTIST.artist_id as wa_artist_id
+  , ARTIST.artist_name as wa_art_name
+  , date(ALBUM.release_date) as wa_release_date
+  from wev_prod.album.album as ALBUM
+  left join wev_prod.album.artist as ARTIST
+  on ALBUM.artist_id = ARTIST.artist_id
+  left join WE_CODE
+  on ARTIST.we_code = WE_CODE.wecode
+) as WA_ALBUM
+left join CP
+on CP.album_id = WA_ALBUM.wa_album_id
+order by wa_album_id desc
 """""""
+10,py,Join Wa_album and ws_album,code,"f_join = wa_albums.join(ws_albums, on=""we_art_id"", how='inner').select(
+      wa_albums.we_art_id.cast('int')
+      , wa_albums.we_art_name.cast('string')
+      , wa_albums.wa_album_id.cast('bigint')
+      , wa_albums.wa_album_name.cast('string')
+      , ws_albums.album_id.cast('bigint')
+      , ws_albums.album_name.cast('string')
+      , ws_albums.album_release_date.cast('string')
+      , ws_albums.sale_ids.cast('array<bigint>')
+      , ws_albums.weverse_album_sale_ids.cast('array<bigint>')
+      , ws_albums.physical_album_sale_ids.cast('array<bigint>')
+      ).toPandas()\
+      .sort_values([
+        'wa_album_id'
+      , 'album_name'
+      ]
+  )"
+11,py,Get similarity and pick the most relevant album,code,"from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+import pandas as pd
+
+def get_sim(r):
+    vectorizer = TfidfVectorizer()
+    if r['album_name'] is not None:
+        vectors = vectorizer.fit_transform([r['wa_album_name'].upper().strip(), r['album_name'].upper().strip()])
+        res = (cosine_similarity(vectors)[0][1] + cosine_similarity(vectors)[1][0])/2
+    else :
+        res = np.nan
+    return  res
+
+
+df_join['sim'] = df_join.apply(lambda x: get_sim(x) if np.isnan(x['we_art_id']) == False else np.nan, axis = 1).astype(float) 
+
+from pyspark.sql.functions import row_number, col
+from pyspark.sql.window import Window
+
+windowSpec = Window.partitionBy([""we_art_id"", ""wa_album_id""]).orderBy(col(""sim"").desc()).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+df_join_s = (
+    spark.createDataFrame(df_join)
+    .withColumn('rank_sim', row_number()
+    .over(windowSpec))
+    .filter(""rank_sim = 1 and case when album_name is null then 1=1 else sim > 0.2 end"")
+)"
+12,py,Select fields,code,"_fin = wa_albums.join(df_join_s, on = ['we_art_id', 'wa_album_id'], how= 'left')\
+    .select(
+          wa_albums.wa_album_id.cast(""int"")
+        , wa_albums.wa_album_name.cast(""string"")
+        , wa_albums.we_art_id.cast(""int"")
+        , wa_albums.we_art_name.cast(""string"")
+        , wa_albums.entity_we_art_id.cast(""bigint"")
+        , wa_albums.wa_artist_id.cast(""bigint"")
+        , wa_albums.wa_art_name.cast(""string"")
+        , wa_albums.wa_release_date.cast(""date"")
+        , df_join_s.album_id.cast(""int"")
+        , df_join_s.album_name.cast(""string"")
+        , df_join_s.album_release_date.cast(""date"")
+        , wa_albums.cp_plan_ids
+        , df_join_s.sale_ids
+        , df_join_s.weverse_album_sale_ids
+        , df_join_s.physical_album_sale_ids
+    )\
+    .orderBy(""wa_album_id"")"
 13,md,,just_heading,#### Run
-14,py,,code,"dflow = Dataflow(run_mode=run_mode, notifier=noti)
-dflow.run(dataframe=spark.sql(agg_q), table_info=table, option=option, buckets=['databricks'])"
-15,md,,just_heading,#### Appendix
-16,md,,just_heading,##### create query
-17,py,,code,"# %sql
-# create or replace table we_mart.wv_media
-# (
-# post_id	string	comment	""포스트 고유 ID""
-# , media_id	int	comment	""wv1에서의 미디어 ID""
-# , section_type	string	comment	""포스트 섹션 유형""
-# , media_type	string	comment	""미디어 유형""
-# , media_name	string	comment	""미디어 명""
-# , comm_id	int	comment	""커뮤니티 명""
-# , we_art_id	int	comment	""we_art_id""
-# , we_art_name	string	comment	""we_art_name""
-# , is_fc_only	int	comment	""멤버십 전용 여부""
-# , is_photo	int	comment	""사진 여부""
-# , is_pitem	int	comment	""유료 구매 아이템 여부""
-# , is_joint_live	int	comment	'합동라이브 여부'
-# , media_cat_ids	array<int>	comment	""미디어 카테고리 아이디들""
-# , media_group_ids	array<int>	comment	""미디어 그룹 아이디들""
-# -- , product_type	string	comment	""유료 컨텐츠 종류""
-# -- , product_id	int	comment	""유료 컨텐츠 ID""
-# -- , pay_method	string	comment	""지불 옵션""
-# -- , tvod_id	bigint	comment	""WV1 기준 TVOD ID""
-# -- , svod_group_id	bigint	comment	""구독형 상품 그룹 ID""
-# -- , vod_type string comment ""VOD 타입""
-# -- , paid_item_id	bigint	comment	""인앱 결제 가능한 상품 ID""
-# -- , package_name	string	comment	""패키지 명""
-# -- , media_product_id	bigint	comment	""weverseshop 기준 유료 컨텐츠 ID""
-# -- , dur_type	string	comment	""구매상품 적용 적용기간""
-# -- , cp_plan_id	bigint	comment	""쿠폰 고유 ID""
-# -- , cp_plan_name	string	comment	""쿠폰 명""
-# -- , sale_id	bigint	comment	""weverseshop sale_id""
-# -- , shop	string	comment	""sale_id 에 따른 SHOP""
-# -- , sale_price_krw	int	comment	""판매가격""
-# -- , cp_code string comment ""CP(판권)사의 코드 정보""
-# -- , content_provider string comment ""CP(판권)사 명""
-# -- , sale_start_dt	timestamp	comment	""판매 시작일""
-# -- , sale_end_dt	timestamp	comment	""판매 종료일""
-# , video_id	bigint	comment	""비디어 고유 ID""
-# , infra_video_id	string	comment	""네이버 동영상 플랫폼 내 ID""
-# , video_type	string	comment	""비디어 타입""
-# , preview_type	string	comment	""프리뷰 여부""
-# , video_expose_status	string	comment	""비디오 공개 상태""
-# , screen_orientation	string	comment	""기본 뷰 모양""
-# , live_to_vod_status	string	comment	""라이브 => VOD 변경 상태""
-# , video_cre_dt	timestamp	comment	""비디어 생성일""
-# , media_dur	int	comment	""미디어 총 시간""
-# , preview_start	int	comment	""미리보기 시작 지점""
-# , preview_end	int	comment	""미리보기 종료 지점""
-# , thumbnail_url	string	comment	""썸네일 URL""
-# , youtube_path string comment ""유튜브 URL""
-# , youtube_videoid string comment ""유튜브 video id""
-# , rate_status string comment ""영상등급""
-# , photo_ids	array<bigint>	comment	""포함된 사진(photo) 아이디 어레이""
-# , cnt_photo	int	comment	""사진 개수""
-# , play_count	bigint	comment	""재생 수""
-# , comment_count	int	comment	""댓글 수""
-# , emotion_count	int	comment	""응원 수""
-# , media_cre_dt	timestamp	comment	""미디어 생성 일시""
-# , media_upd_dt	timestamp	comment	""미디어 수정 일시""
-# , media_rel_dt	timestamp	comment	""미디어 노출 일시""
-# , part_date string comment ""파티션 일자""
-# )
-# partitioned by(part_date)
-# comment ""미디어 메타 정보""
+14,py,,code,"b = Dataflow(run_mode=run_mode, notifier=noti)
+b.run(dataframe=df_fin, table_info=table, option=option, buckets=['databricks'])"
+15,md,,just_heading,#### Appendix; Create Table
+16,py,,code,"q = """"""
+create or replace table we_mart.wa_album
+(
+  wa_album_id	int	comment	""위버스 앨범 ID""
+, wa_album_name	string	comment	""위버스 앨범 명""
+, we_art_id	int	comment	""위버스 플랫폼 내 통합 아티스트 ID""
+, we_art_name	string	comment	""위버스 플랫폼 내 통합 아티스트 명""
+, entity_we_art_id  bigint comment ""wecode 에 따른 객체 아티스트 ID(솔로/그룹/유닛 분리)""
+, wa_artist_id	bigint	comment	""위버스 앨범 아티스트 ID""
+, wa_art_name	string	comment	""위버스 앨범 아티스트 명""
+, wa_release_date	date	comment	""위버스 앨범 출시 일""
+, album_id	int	comment	""앨범 ID(WS 앨범 메타)""
+, album_name	string	comment	""앨범 명 (WS 앨범 메타)""
+, album_release_date	date	comment	""앨범 발매일 (WS 앨범 메타)""
+, cp_plan_ids	array<bigint>	comment	""쿠폰 cp_plan_id 리스트""
+, sale_ids	array<bigint>	comment ""앨범과 관련된 모든 sale_id 리스트""
+, weverse_album_sale_ids	array<bigint>	comment	""위버스 앨범 sale_id 리스트""
+, physical_album_sale_ids	array<bigint>	comment	""실물 앨범 sale_id 리스트""
+) 
+comment ""위버스 앨범 메타 정보""
+""""""
+# spark.sql(q)
 "

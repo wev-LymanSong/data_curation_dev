@@ -63,7 +63,62 @@ we_meta.ws_album
   
 # TABLE NOTICE
   
-   
+### 테이블 개요
+
+* **테이블 목적**: 위버스샵에서 판매되는 앨범의 메타 정보를 담고 있음
+* **데이터 레벨**: transactional data
+* **파티션 키**: `part_date`
+* **주요 키**: `album_id`, `sale_id`, `goods_id`
+
+### 테이블 특징
+
+* `ws_album_not_null_list` 테이블에서 앨범 정보를 추출하여 생성됨
+* `ws_album_id` 테이블에서 `album_id`를 가져와서 매핑
+* 앨범 관련 정보를 `we_mart.we_artist` 테이블과 조인하여 생성
+* 앨범 판매 정보를 `weverseshop.goods`, `weverseshop.stock`, `weverseshop.sale`, `weverseshop.sale_stock` 테이블과 조인하여 생성
+* `album_scm_option_type` 컬럼은 `map` 타입으로 저장되어 SCM팀에서 사용하는 앨범 판매 단위 종류 정보를 담고 있음
+* `goods_option_values` 컬럼은 `struct` 타입으로 저장되어 상품 옵션 정보를 담고 있음
+
+### 데이터 추출 및 생성 과정
+
+1.  **주요 데이터 소스**:
+    *   `we_meta.ws_album_not_null_list`: 앨범 메타 정보 (앨범명, 아티스트, 발매일 등)
+    *   `we_meta.ws_album_id`: 앨범 ID 정보
+    *   `we_mart.we_artist`: 아티스트 정보
+    *   `weverseshop.goods`: 상품 정보
+    *   `weverseshop.goods_stock`: 상품 재고 정보
+    *   `weverseshop.stock`: 재고 정보
+    *   `weverseshop.goods_option`: 상품 옵션 정보
+    *   `weverseshop.goods_option_group`: 상품 옵션 그룹 정보
+    *   `weverseshop.sale`: 판매 정보
+    *   `weverseshop.sale_stock`: 판매 재고 정보
+2.  **데이터 전처리**:
+    *   `we_meta.ws_album_not_null_list` 테이블에서 앨범 정보를 추출
+    *   `we_meta.ws_album_id` 테이블에서 `album_id`를 가져와서 매핑
+    *   `we_mart.we_artist` 테이블과 조인하여 아티스트 정보 추가
+    *   `weverseshop.goods`, `weverseshop.stock`, `weverseshop.sale`, `weverseshop.sale_stock` 테이블과 조인하여 앨범 판매 정보 추가
+3.  **데이터 통합**:
+    *   앨범 메타 정보, 아티스트 정보, 판매 정보를 하나의 데이터프레임으로 통합
+4.  **최종 테이블 생성**:
+    *   통합된 데이터프레임을 `we_meta.ws_album` 테이블에 저장
+
+### 테이블 활용 가이드
+
+* **주요 활용**:
+    *   위버스샵에서 판매되는 앨범의 메타 정보를 조회
+    *   앨범 판매 현황 분석
+    *   앨범 관련 마케팅 활동 분석
+* **조인 시 유의사항**:
+    *   `we_art_id` 컬럼을 사용하여 `we_mart.we_artist` 테이블과 조인
+    *   `sale_id` 컬럼을 사용하여 `weverseshop.sale` 테이블과 조인
+    *   `goods_id` 컬럼을 사용하여 `weverseshop.goods` 테이블과 조인
+
+### 추가 정보
+
+*   `ws_album_not_null_list` 테이블은 `we_meta` 스키마에 존재하며, 앨범 정보를 담고 있음.
+*   `ws_album_id` 테이블은 `we_meta` 스키마에 존재하며, 앨범 ID 정보를 담고 있음.
+*   `we_mart.we_artist` 테이블은 `we_mart` 스키마에 존재하며, 아티스트 정보를 담고 있음.
+*   `weverseshop.goods`, `weverseshop.stock`, `weverseshop.sale`, `weverseshop.sale_stock` 테이블은 `weverseshop` 스키마에 존재하며, 위버스샵 상품 및 판매 정보를 담고 있음.  
 ---
 # COLUMN INFO
 
@@ -112,7 +167,159 @@ we_meta.ws_album
 ---
 # HOW TO USE
   
-   
+### Downstream Table/View
+- `ws_album` 테이블을 사용하여 `we_mart.ws_album_sale` 테이블을 생성
+    - ```sql
+      create or replace table we_mart.ws_album_sale
+      (
+        -- ...
+        , album_id int comment "앨범 고유 번호"
+        , album_name string comment "정식 앨범명"
+        , album_qty_type string comment "앨범 판매 단위 종류"
+        , album_option_type string comment "앨범 패키지 및 형태 구분"
+        , album_physical_type string comment "앨범 물리 형태 구분"
+        , is_weverse_album int comment "위버스 앨범 여부"
+        , wa_album_id int comment "위버스 앨범 ID"
+        -- ...
+      )
+      partitioned by (part_date)
+      comment "위버스 앨범 판매 마트"
+      ;
+      ```
+- `ws_album` 테이블을 사용하여 `we_mart.ws_album_sale` 테이블과 조인
+    - ```sql
+      select 
+        ws_order.we_member_id
+      , ws_order.ord_sheet_number
+      , ws_album.album_name
+      , ws_album.album_qty_type
+      from we_mart.ws_order
+      join we_meta.ws_album
+      on ws_order.sale_id = ws_album.sale_id
+      where ws_order.part_date = '2024-08-28'
+      and ws_order.logi_cat = 'ALBUM'
+      ;
+      ```
+- `ws_album` 테이블을 사용하여 `we_mart.stats_ws_d_album_cumul` 테이블을 생성
+    - ```sql
+      create or replace table we_mart.stats_ws_d_album_cumul
+      (
+        -- ...
+        , album_id int comment "앨범 ID"
+        , album_name string comment "앨범 명"
+        , album_type string comment "앨범 타입"
+        -- ...
+      )
+      partitioned by (key_date)
+      comment "앨범 별 초동기간 판매 정보"
+      ;
+      ```
+- `ws_album` 테이블을 사용하여 `we_mart.stats_ws_d_album_cumul` 테이블과 조인
+    - ```sql
+      select 
+        ws_album.album_id
+      , ws_album.album_name
+      , ws_album.album_cumulative_date
+      , stats_ws_d_album_cumul.key_date
+      , stats_ws_d_album_cumul.album_pur_qty
+      from we_meta.ws_album
+      join we_mart.stats_ws_d_album_cumul
+      on ws_album.album_id = stats_ws_d_album_cumul.album_id
+      where ws_album.part_date = '2024-08-28'
+      and stats_ws_d_album_cumul.key_date >= ws_album.album_release_date
+      and stats_ws_d_album_cumul.key_date <= ws_album.album_cumulative_date
+      ;
+      ```
+- `ws_album` 테이블을 사용하여 `we_mart.stats_ws_d_album_sale_scm` 테이블을 생성
+    - ```sql
+      create or replace table we_mart.stats_ws_d_album_sale_scm
+      (
+        -- ...
+        , album_id int comment "앨범 고유 번호"
+        , album_name string comment "정식 앨범명"
+        , album_scm_option_name string comment "scm 지정 앨범 옵션명"
+        -- ...
+      )
+      partitioned by (is_cx_on_the_day, part_album_id)
+      comment "SCM 앨범 판매"
+      ;
+      ```
+- `ws_album` 테이블을 사용하여 `we_mart.stats_ws_d_album_sale_scm` 테이블과 조인
+    - ```sql
+      select 
+        ws_album.album_id
+      , ws_album.album_name
+      , ws_album.album_scm_option_type
+      , stats_ws_d_album_sale_scm.key_date
+      , stats_ws_d_album_sale_scm.net_pay_scm_qty
+      from we_meta.ws_album
+      join we_mart.stats_ws_d_album_sale_scm
+      on ws_album.album_id = stats_ws_d_album_sale_scm.album_id
+      where ws_album.part_date = '2024-08-28'
+      and stats_ws_d_album_sale_scm.is_cx_on_the_day = 0
+      ;
+      ```
+### Data Extraction
+- "2024-08-28" 날짜에 "ARTIST" 아티스트의 앨범 정보를 추출
+    - ```sql
+      select 
+        album_id
+      , album_name
+      , album_release_date
+      , album_cumulative_date
+      , album_qty_type
+      , album_option_type
+      , album_physical_type
+      , is_wev_exclusive
+      , is_wa_included
+      from we_meta.ws_album
+      where part_date = '2024-08-28'
+      and we_art_id = ARTIST
+      ;
+      ```
+- "2024-08-28" 날짜에 "ARTIST" 아티스트의 앨범 중 위버스 앨범 포함 여부가 "YES"인 앨범 정보를 추출
+    - ```sql
+      select 
+        album_id
+      , album_name
+      , album_release_date
+      , album_cumulative_date
+      , album_qty_type
+      , album_option_type
+      , album_physical_type
+      from we_meta.ws_album
+      where part_date = '2024-08-28'
+      and we_art_id = ARTIST
+      and is_wa_included = 'YES'
+      ;
+      ```
+- "2024-08-28" 날짜에 "ARTIST" 아티스트의 앨범 중 "Global" 지역에 발매된 앨범 정보를 추출
+    - ```sql
+      select 
+        album_id
+      , album_name
+      , album_release_date
+      , album_cumulative_date
+      from we_meta.ws_album
+      where part_date = '2024-08-28'
+      and we_art_id = ARTIST
+      and target_ctry = 'Global'
+      ;
+      ```
+- "2024-08-28" 날짜에 "ARTIST" 아티스트의 앨범 중 "ALBUM_OPTION" 옵션을 가지는 앨범 정보를 추출
+    - ```sql
+      select 
+        album_id
+      , album_name
+      , album_release_date
+      , album_cumulative_date
+      , album_qty_type
+      from we_meta.ws_album
+      where part_date = '2024-08-28'
+      and we_art_id = ARTIST
+      and album_option_type = 'ALBUM_OPTION'
+      ;
+      ```  
 ---
 # PIPELINE INFO
 
@@ -156,6 +363,5 @@ we_meta.ws_album
 
 ## 🐤 Downstream Tables Info
   
-   
 ---  
 ---
