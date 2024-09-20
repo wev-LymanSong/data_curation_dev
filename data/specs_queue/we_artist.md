@@ -1,3 +1,4 @@
+
 we_mart.we_artist
 =================
 
@@ -12,7 +13,7 @@ we_mart.we_artist
 |**Created By**|윤상혁|
 |**Last Updated By**|윤상혁|
 |**Collaborators**|윤상혁[35], 구민서[1], 송재영[1], 구민서[1], 박상민[1]|
-
+  
 #### Change History
 |**Date**|**By**|**LINK**|
 | :--- | :--- | :--- |
@@ -55,11 +56,73 @@ we_mart.we_artist
 |2024-04-03|윤상혁|[PR](https://github.com/benxcorp/databricks/commit/2bac839412577ffbcb8c9156fbd3d2f4c582509c)|
 |2024-05-23|윤상혁|[PR](https://github.com/benxcorp/databricks/commit/4b2f1f5a4966ae656b692b0301148bd99122b5aa)|
 |2024-08-02|윤상혁|[PR](https://github.com/benxcorp/databricks/commit/6ce07784205014b06a81e0bf90c8709f286470e7)|
-
-
+  
+  
 # TABLE NOTICE
+  
+### 테이블 개요
 
+*   **테이블 목적**: Weverse 플랫폼 내 아티스트 정보와 Weverse, Weverse Shop, Fanclub, Weverse DM 서비스 연동 정보를 통합하여 제공
+*   **데이터 레벨**: TRANSACTIONAL DATA
+*   **파티션 키**: 없음
+*   **주요 키**: `we_art_id`
 
+### 테이블 특징
+*  `we_art_id` 는 아티스트를 식별하는 고유 키로, `wecode.tb_entity` 테이블의 `entity_code` 와 매핑
+*  Weverse, Weverse Shop, Fanclub, Weverse DM 서비스에서 사용하는 아티스트 식별자를 통합하여 관리
+*  `is_comm_enabled`, `is_comm_fronzen`, `is_shop_enabled`, `is_fc_enabled`, `is_shop_show_app` 등의 컬럼을 통해 각 서비스의 활성화 상태를 파악할 수 있음
+
+### 데이터 추출 및 생성 과정
+
+1.  **주요 데이터 소스**:
+    *   `weverse2.community_common_community`: Weverse 커뮤니티 정보
+    *   `weverseshop.label_artist`: Weverse Shop 아티스트 정보
+    *   `wev_prod.wecode.tb_entity`: Weverse 플랫폼 아티스트 정보
+    *   `wev_prod.wecode.tb_entity_meta`: Weverse 플랫폼 아티스트 메타정보
+    *   `wev_prod.wecode.tb_affiliate_company`: Weverse 플랫폼 아티스트 소속 레이블 정보
+    *   `wev_prod.wecode.tb_subsidiary_company`: Weverse 플랫폼 아티스트 소속 회사 정보
+    *   `membership.membership`: Fanclub 멤버십 정보
+    *   `membership.artist_shop_version`: Fanclub 멤버십과 Weverse Shop 연동 정보
+    *   `membership.artist`: Fanclub 멤버십과 Weverse Shop 연동 정보
+    *   `wev_prod.weverse2.wdm_common_dm`: Weverse DM 정보
+    *   `service_log.weplyapi_client_log`: Weverse Shop 접속 로그 정보
+2.  **데이터 전처리**:
+    *   `weverse2.community_common_community` 테이블에서 `comm_name`, `comm_cre_date`, `comm_cre_dt`, `comm_open_date`, `fc_name`, `comm_to_artist_tags`, `comm_url_path`, `comm_open_type`, `debut_date` 컬럼을 추출하고, `cnt_art_indi`, `cnt_art_indi_active`, `arr_comm_art_indi_id`, `arr_comm_art_indi_name` 컬럼을 집계
+    *   `weverseshop.label_artist` 테이블에서 `ws_art_id`, `ws_art_name`, `fc_artist_code`, `is_shop_enabled`, `is_shop_show_app`, `ws_art_short_name`, `ws_art_create_dt`, `ws_label_id`, `gl_shop_art_id`, `jp_shop_art_id`, `us_shop_art_id`, `ws_label_name`, `ws_label_cre_dt` 컬럼을 추출하고, `arr_fc_id` 컬럼을 집계
+    *   `wev_prod.wecode.tb_entity` 테이블에서 `entity_code`, `entity_name` 컬럼을 추출
+    *   `wev_prod.wecode.tb_entity_meta` 테이블에서 `is_contracted`, `kr_name`, `en_name`, `jp_name` 컬럼을 추출
+    *   `wev_prod.wecode.tb_affiliate_company` 테이블에서 `subsidiary_company_id` 컬럼을 추출
+    *   `wev_prod.wecode.tb_subsidiary_company` 테이블에서 `company_code`, `company_name` 컬럼을 추출
+    *   `membership.membership` 테이블에서 `membership_id` 컬럼을 추출
+    *   `wev_prod.weverse2.wdm_common_dm` 테이블에서 `community_id` 컬럼을 추출
+    *   `service_log.weplyapi_client_log` 테이블에서 `label_artist_id` 컬럼을 추출하여 `shop_open_date` 컬럼을 생성
+3.  **데이터 통합**:
+    *   `we_art_id` 컬럼을 기준으로 위에서 추출한 데이터를 통합
+4.  **최종 테이블 생성**:
+    *   `wev_prod.we_mart.we_artist` 테이블에 데이터를 삽입
+
+### 테이블 활용 가이드
+
+*   **주요 활용**:
+    *   Weverse, Weverse Shop, Fanclub, Weverse DM 서비스 연동 정보를 확인
+    *   아티스트 정보와 서비스 정보를 함께 분석
+    *   각 서비스별 활성화 상태를 파악
+*   **조인 시 유의사항**:
+    *   `we_art_id` 컬럼을 기준으로 다른 테이블과 조인
+    *   `wecode.tb_entity` 테이블의 `entity_code` 컬럼과 매핑하여 사용
+
+### 추가 정보
+*  `comm_deact_date` 컬럼은 커뮤니티 비활성화 일자를 나타내며, 커뮤니티가 중지된 경우 해당 날짜가 기록됨
+*  `shop_open_date` 컬럼은 Weverse Shop 오픈 일자를 나타내며, Weverse Shop 접속 로그 정보를 기반으로 생성됨
+*  `debut_date` 컬럼은 아티스트 데뷔 일자를 나타냄
+*  `wdm_open_date` 컬럼은 Weverse DM 오픈 일자를 나타냄
+*  `wecode` 컬럼은 Weverse 플랫폼 아티스트 정보를 식별하는 Weverse Code를 나타냄
+*  `wecode_name` 컬럼은 Weverse 플랫폼 아티스트 이름을 나타냄
+*  `is_contracted` 컬럼은 현재 플랫폼에 입점된 아티스트 여부를 나타냄
+*  `company_code` 컬럼은 아티스트 소속 레이블 코드를 나타냄
+*  `company_name` 컬럼은 아티스트 소속 레이블 이름을 나타냄
+*  `group_tag` 컬럼은 분석용 태그를 나타냄
+*  `ctry_code` 컬럼은 아티스트 소속 국가 코드를 나타냄  
 ---
 # COLUMN INFO
 
@@ -110,12 +173,12 @@ we_mart.we_artist
 |42|company_name|string|레이블명|
 |43|group_tag|array<string>|분석용 태그|
 |44|ctry_code|string|아티스트 국가|
-
-
+  
+    
 ---
 # HOW TO USE
-
-
+  
+  
 ---
 # PIPELINE INFO
 
@@ -135,8 +198,8 @@ we_mart.we_artist
 
 - [analytics_ws_mart_daily](https://github.com/benxcorp/dp-airflow/blob/main/dags/utils/dynamic_dag/wev/task_list/analytics_ws_mart_daily.py)
 - [analytics_wv_mart_daily](https://github.com/benxcorp/dp-airflow/blob/main/dags/utils/dynamic_dag/wev/task_list/analytics_wv_mart_daily.py)
-
-
+  
+    
 ---
 # DEPENDENCIES
 
@@ -257,5 +320,6 @@ we_mart.we_artist
 | |we_meta.wv_ops_event|
 
 ## 🐤 Downstream Tables Info
-
+  
+dfdfd
 ---

@@ -3,15 +3,16 @@ import pandas as pd
 import numpy as np
 import re
 import json
-ROOT_DIR = "c:\\Users\\thdwo\\Documents\\Github"
-KEY_DIR = "c:\\Users\\thdwo\\Documents\\Github\\keys"
-BASE_DIR = "c:\\Users\\thdwo\\Documents\\Github\\gedi_dev"
+
+ROOT_DIR = "/Users/lymansong/Documents/GitHub"
+KEY_DIR = "/Users/lymansong/Documents/GitHub/keys"
+BASE_DIR = "/Users/lymansong/Documents/GitHub/gedi_dev"
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 REQ_DIR = os.path.join(DATA_DIR, 'requests_extraction')
 SPEC_DIR = os.path.join(DATA_DIR, "specs")
 SOURCECODE_DIR = os.path.join(DATA_DIR, "source_codes")
 
-REPO_DIR = 'c:\\Users\\thdwo\\Documents\\Github\\databricks'
+REPO_DIR = '/Users/lymansong/Documents/GitHub/databricks'
 DAG_DIR = "dags/utils/dynamic_dag/wev/task_list"
 
 CODE_DIR = os.path.join(REPO_DIR, "src/data_analytics")
@@ -25,6 +26,13 @@ WE_META_TEMPLATE_PAGE_ID = '10206aff62a88022a849fc900506d5af'
 
 
 field2dir_dict =  {
+    'we_mart' : WE_MART_DIR, 
+    'we_meta' : WE_META_DIR, 
+    'we_stats' : WE_STAT_DIR, 
+    'wi_view' : WI_VIEW_DIR, 
+}
+
+field2table_notice_template = {
     'we_mart' : WE_MART_DIR, 
     'we_meta' : WE_META_DIR, 
     'we_stats' : WE_STAT_DIR, 

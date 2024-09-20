@@ -1,0 +1,749 @@
+,cell_type,cell_title,role,codes
+1,md,,description,"### ws_goods_stock
+* ws_goods_stock_hourly"
+2,md,,basic_info,"#### Basic Info 
+* 상품판매, 재고현황 등 상품에 대한 전반적인 메타데이터
+* META TABLE
+* DAILY OVERWRITE
+* WIKI [https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/2864185639/we+mart.ws+goods+stock]
+
+
+###### history
+|date|contributor|comments|
+|----|----|----|
+|2021-11-29|데이터분석팀 이현지|create mart table/배치생성|
+|2021-12-13|데이터분석팀 이현지|파티션 테이블로 변경|
+|2022-04-22|데이터분석팀 이현지|category_upr/lwr 매핑로직 변경|
+|2022-05-04|데이터분석팀 이현지|category_upr/lwr 매핑시 we_art_id누락경우 수정|
+|2022-05-26|데이터분석팀 이현지|fc_kit_ver 추가|
+|2022-11-28|데이터분석팀 이현지|goods_cat light stick 추가|
+|2023-01-10|데이터분석팀 이현지|goods_cat 로직 수정|
+|2023-06-08|데이터분석팀 이현지|goods_cat: POD 추가|
+|2023-09-21|데이터분석팀 이현지|bm_option 추가|
+|2023-10-06|데이터분석팀 이현지|bm_option source settlement DB로 변경|
+|2024-01-02|데이터분석팀 이현지|항목 추가 및 ws_goods_stock_hourly 코드 병합|
+|2024-03-08|데이터분석팀 이현지|goods_cat='POD' 로직 수정|
+|2024-03-08|데이터분석팀 이현지|항목 추가 ```vertex_commodity_code_type,vertex_commodity_code_value,tax_type,is_digital_live,origins,origins_ctry_name,sale_start_at,sale_end_at,sale_reserv_history```|
+
+
+###### Source Tables
+* we_mart.ods_ws_goods
+* we_mart.ods_ws_goods_stock
+* we_mart.ods_ws_stock
+* we_mart.ods_ws_goods_option
+* we_mart.ods_ws_goods_option_group
+* we_mart.ods_ws_sale
+* we_mart.ods_ws_sale_stock
+* we_mart.ods_ws_sale_fixed_price
+* we_mart.ods_ws_goods_goods_category
+* we_mart.ods_ws_goods_category
+* we_mart.ods_ws_label_artist
+* we_mart.ods_ws_goods_translation
+* we_mart.ods_ws_common_info
+* we_mart.ods_ws_shipping_group
+* we_mart.ods_ws_delivery_service
+* we_mart.ods_ws_trade_company
+* membership.membership
+* product.status_reservation
+* product.status_reservation_item"
+3,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+4,md,,just_heading,#### FUNCTIONS
+5,py,,code,"# hour, date 구분
+def get_key():
+    mode = dbutils.widgets.get(""mode"")
+    if mode == 'hourly':
+        k = {'mode': mode
+            , 'hour': dbutils.widgets.get(""target_hour"")
+            , 'date': dbutils.widgets.get(""target_date"")}
+    elif mode == 'daily':
+        k = {'mode': mode
+             , 'date': dbutils.widgets.get(""target_date"")}
+    return(k)
+
+# 소스 뷰테이블 생성
+def cre_view_table(name):
+    if get_key()['mode'] == 'daily':
+        key = get_key()['date']
+        source = 'wev_prod.we_mart.ods_ws_'
+        tbl_name = f'''{source}{name}'''
+        tbl = spark.read.table(tbl_name).where(f'''part_date = ""{key}""''') 
+    elif get_key()['mode'] == 'hourly':
+        source = 'wev_prod.weverseshop.'
+        tbl_name = f'''{source}{name}'''
+        tbl = spark.read.table(tbl_name)
+        
+    return tbl.createOrReplaceTempView(name)
+
+# dataflow option, table 속성 선택
+def get_option():
+  key_info = get_key()
+  if key_info['mode'] == 'daily':
+    key = key_info['date']
+    key_date = key_info['date']
+    o = {
+    'date' : key_date, 
+    'format':'delta',
+    'mode': 'overwrite',
+    'period': 'daily',
+    'noti' : True
+    }
+    t = {
+    'database' : 'we_mart',
+    'table_name' : 'ws_goods_stock', 
+    'service' : 'weverseshop',
+    'partition' : ['part_date']
+    }
+  
+  elif key_info['mode'] == 'hourly':
+    key = key_info['hour']
+    key_date = key_info['date']
+    o = {
+    'date' : key_date, 
+    'format':'delta',
+    'mode': 'overwrite',
+    'period': 'hourly',
+    'noti' : True
+    }
+    t = {
+    'database' : 'we_mart',
+    'table_name' : 'ws_goods_stock_hourly', 
+    'service' : 'weverseshop'
+    }
+    
+  return {'mode': key_info['mode']
+          , 'key': key
+          , 'key_date': key_date
+          , 'option': o
+          , 'table': t
+          }
+  
+# 최종 dataframe
+def fin_df(df_q, mode):
+    if mode == 'daily':
+        # daily 에서 drop할 columns
+        df = spark.sql(df_q)
+        df = df.drop('precautions','notification_info','sale_title','sale_comment','part_hour')
+    else:
+        df = spark.sql(df_q)
+    
+    return df
+
+# slack 보내기
+import requests
+DEBUG = False
+def send_message_to_slack(target):
+
+    if target == 'sale_stock_id_unique':
+        message = ""we_mart.ws_goods_stock.sale_stock_id 중복 인입 있습니다.""
+
+    slack_message = f""""""*{key} {message} *""""""
+    slack_token = dbutils.secrets.get(scope=""slack"", key=""token"")
+    slack_icon_emoji = ':official_check:'
+    slack_user_name = 'Item Alert'
+
+    if DEBUG: 
+        slack_channel = ""#da-monitor-test""
+    else: 
+        slack_channel = '#da-monitor'
+
+    response = requests.post('https://slack.com/api/chat.postMessage', {
+        'token': slack_token,
+        'channel': slack_channel,
+        'icon_emoji': slack_icon_emoji,
+        'username': slack_user_name,
+        'text': slack_message
+        })
+    
+    print (response.json())"
+6,md,,just_heading,#### SETTINGS
+7,py,,setting,"run_mode = dbutils.widgets.get(""run_mode"")
+key = get_option()['key']
+key_date = get_option()['key_date']
+mode = get_option()['mode']
+
+option = get_option()['option']
+table = get_option()['table']
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"")
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}"
+8,py,,code,"# 이용 테이블 (ods, prod 구분용)
+table_list = [
+	'goods'
+,	'goods_stock'
+,	'stock'
+,	'goods_option'
+,	'goods_option_group'
+,	'sale'
+,	'sale_stock'
+,	'sale_fixed_price'
+,	'goods_goods_category'
+,	'goods_category'
+,	'goods_translation'
+,	'shipping_group'
+,	'trade_company'
+]
+
+for name in table_list:
+    cre_view_table(name)"
+9,md,,just_heading,#### MAIN QUERY
+10,py,,code,"df_q = f'''
+select * except(seq) from (
+select *, row_number() over(partition by part_date, sale_stock_id order by sale_upd_dt desc) as seq
+from (
+
+    select distinct
+-- ID
+    GDS.goods_id                                                                                                      as goods_id
+    , SLE.sale_id                                                                                                     as sale_id
+    , GDT.stock_id                                                                                                    as stock_id
+    , SLT.sale_stock_id                                                                                               as sale_stock_id
+    , GGC.goods_upr_cat_id                                                                                            as goods_upr_cat_id
+    , GGC.goods_lwr_cat_id                                                                                            as goods_lwr_cat_id
+    , ART.we_art_id                                                                                                   as we_art_id
+    , GDO.goods_option_id                                                                                             as goods_option_id
+    , GOG.goods_option_group_id                                                                                       as goods_option_group_id
+    , GOG.trade_company_id                                                                                            as trade_co_id
+    , GDS.pickup_id                                                                                                   as pickup_id
+    , SHIP.shipping_group_id                                                                                          as ship_group_id
+    , SLE.delivery_service_domestic_id                                                                                as deliv_service_dom_id
+    , SLE.delivery_service_overseas_id                                                                                as deliv_service_over_id
+-- MEMBERSHIP ID
+    , GDS.membership_id                                                                                               as fc_id
+    , GDS.membership_category_id                                                                                      as fc_cat_id
+-- SKU
+    , GDS.goods_code                                                                                                  as goods_code
+    , GDO.goods_option_code                                                                                           as goods_option_code
+    , GDO.barcode                                                                                                     as barcode
+    , GDO.wms_code                                                                                                    as wms_code
+    , GDO.sap_code                                                                                                    as sap_code
+    , GDO.wbs_code                                                                                                    as wbs_code
+    , GOG.hscode                                                                                                      as hscode
+-- POD
+    , GDO.pod_option_sell_code                                                                                        as pod_option_sell_code
+    , GDS.pod_template_code                                                                                           as pod_template_code
+    , GDO.pod_resource_id                                                                                             as pod_resource_id
+    , GOG.pod_product_code                                                                                            as pod_product_code
+    , GDS.pod_product_type                                                                                            as pod_product_type
+-- FINANCE
+    , ST_CAT.bm_type                                                                                                  as bm_option
+    , ST_CAT.settlement_category_name                                                                                 as settlement_category_name
+    , ST_CAT.settlement_category_code                                                                                 as settlement_category_code
+    , GOG.vertex_commodity_code_type
+    , GOG.vertex_commodity_code_value
+    , GOG.tax_type
+-- CATEGORY
+    , GDS.shop                                                                                                        as shop
+    , ART.we_art_name                                                                                                 as we_art_name
+    , trim(GCU.name)                                                                                                  as goods_upr_cat_name
+    , trim(GCL.name)                                                                                                  as goods_lwr_cat_name
+    , SLC_name.sale_upr_cat_name                                                                                      as sale_upr_cat_name
+    , SLC_name.sale_lwr_cat_name                                                                                      as sale_lwr_cat_name
+    , case when MEM.membership_id is not null then 'MEMBERSHIP'
+            when GDS.goods_section = 'DIGITAL_TICKET' and GDS.goods_type = 'DIGITAL' and upper(trim(GCU.name)) like 'WEVERSE' then 'TVOD'
+            when GDS.goods_section = 'DIGITAL_TICKET' and GDS.goods_type = 'DIGITAL' and upper(trim(GCU.name)) like 'LIVE' then 'LIVE_TICKET'
+            when upper(GDS_name.goods_name) like '%LIGHT%STICK%' then 'LIGHT_STICK'
+            when SLE.membership_benefit_type <> 'NORMAL' then SLE.membership_benefit_type
+            when upper(GDS_name.goods_name) like '%MEMBERSHIP%' and GDO.goods_option_code like 'M%' and (upper(GDS_name.goods_name) like '%KIT%' or upper(GDO.name) like '%KIT%' or upper(GDO.name) like '%키트%' or upper(GDO.name) like '%GIFT%') then 'KIT'
+            when upper(GDS.goods_type) = 'POD' then 'POD'
+            else 'OTHER'
+        end                                                                                                           as goods_cat
+    , GDS.goods_section                                                                                               as goods_section
+    , GDS.goods_type                                                                                                  as goods_type
+    , GDO.goods_option_type                                                                                           as goods_option_type
+    , GDO.goods_receipt_type                                                                                          as goods_option_receipt_type
+    , GOG.logistics_category                                                                                          as logi_cat
+-- FC
+    , FC.fc_ver                                                                                                       as fc_ver
+    , case when GDS.goods_type = 'DELIVERY' and GDO.goods_option_code not rlike 'DIGITAL' and (GDS.goods_code rlike 'MS_|MBS_|MS[0-9]*$|MBS[0-9]*$' or GDS.goods_code in ('BPG0001','GL_FROMIS9WL')) then
+            case when GDS.goods_code rlike 'KIT_V([0-9]*)$' then regexp_extract(GDS.goods_code, 'KIT_V([0-9]*)$', 1) -- 일반 키트, 프리미엄 키트 구분
+                when GDS.goods_code rlike 'MB([0-9]*)$' then regexp_extract(GDS.goods_code, 'MB([0-9]*)$', 1) -- MERCH BOX 버전 구분
+                when GDS.goods_code rlike 'GT([0-9]*)$' then regexp_extract(GDS.goods_code, 'GT([0-9]*)$', 1) -- 멤버십 구매 특전 구분
+                when SLE.sale_id in (154, 295, 673, 674, 675, 676, 806, 807, 7207, 8124) then '1'
+                when ART.we_art_id in (4,5) and GDS.goods_code rlike 'KIT$' then '1'
+                when GDS.goods_code rlike 'KIT$' then '2'
+                else GDS_name.goods_name end
+        end                                                                                                           as fc_kit_ver
+-- BOM
+    , case when GOC.component_sap_codes is not null then 1 else 0 end                                                 as is_bom_enabled
+    , GOC.component_sap_codes                                                                                         as bom_sap_codes
+-- NAME
+    , GDS_name.goods_name                                                                                             as goods_name
+    , GDO.name                                                                                                        as goods_option_name
+    , GOG.name                                                                                                        as goods_option_group_name
+    , SLT_name.sale_stock_name_ko                                                                                     as sale_stock_name_ko
+    , SLT_name.sale_stock_name_ja                                                                                     as sale_stock_name_ja
+    , SLT_name.sale_stock_name_en                                                                                     as sale_stock_name_en
+    , SLT_name.release_name                                                                                           as release_name
+-- PRICE
+    , SLE.currency_code                                                                                               as currency_code
+    , SLE.price                                                                                                       as original_price
+    , SLE.sale_price                                                                                                  as sale_price
+    , SLE.fixed_price                                                                                                 as is_fixed_price
+    , case
+        when SLE.fixed_price = 1 and SLE.currency_code = 'KRW' then SFP.fixed_sale_price 
+        when SLE.fixed_price = 1 and SLE.currency_code = 'USD' then SFP.fixed_sale_price_USD
+        when SLE.fixed_price = 1 and SLE.currency_code = 'JPY' then SFP.fixed_sale_price_JPY
+        else SLE.sale_price
+        end                                                                                                           as final_sale_price
+    , case when SLE.fixed_price = 1 then SFP.fixed_sale_price else null end                                           as fixed_sale_price
+    , case when SLE.fixed_price = 1 then SFP.fixed_sale_price_USD else null end                                       as fixed_sale_price_USD
+    , case when SLE.fixed_price = 1 then SFP.fixed_sale_price_JPY else null end                                       as fixed_sale_price_JPY  
+-- INFO
+    , SLE.max_order_quantity                                                                                          as max_ord_qty
+    , SLE.max_order_limit_type                                                                                        as max_ord_lim_type
+    , SLE.max_order_limit_per_user                                                                                    as max_ord_lim_p_user
+    , SLE.sale_alarm_percent                                                                                          as sale_alrarm_pc
+    , SLE.min_order_quantity                                                                                          as min_ord_qty
+    , SLE.usable_cart                                                                                                 as is_cart
+    , SLE.taxable                                                                                                     as is_tax
+    , SLE.include_tax_in_price                                                                                        as is_incl_tax
+    , SLE.status                                                                                                      as sale_status
+    , SLE.shop_tags                                                                                                   as shop_tags
+    , SLE.digital_live                                                                                                as is_digital_live
+    --   , GDS.goods_weight as weight1
+    , GOG.weight                                                                                                      as weight
+    , GOG.package_size                                                                                                as package_size
+    , GOG.album_quantity                                                                                              as album_qty
+    , case when GOG.mode = 1 then '사입' 
+           when GOG.mode = 2 then '위탁'
+           else '기타' end                                                                                             as business_type
+    -- , case when ST_CAT.bm_type in ('GENERAL','GENERAL_PICK_UP','MEMBERSHIP_KIT_WEV','MEMBERSHIP_WEV') then '사입'
+    --        when ST_CAT.bm_type in ('VOD_RS','LIVE_FEE_RS','POD','BY_FANS') then '수익쉐어'
+    --        when ST_CAT.bm_type in ('CONSIGNMENT','PICK_UP','MEMBERSHIP_KIT','MEMBERSHIP_BOX','MEMBERSHIP_NEW','LIVE_FEE','DIGITAL') then '위탁'
+    --        end                                                                                                        as business_type2
+    , STK.total_goods_receipt_amount                                                                                  as tot_goods_qty
+    , STK.expected_amount                                                                                             as exp_goods_qty
+    , STK.available_amount                                                                                            as real_goods_qty
+    , STK.fake_amount                                                                                                 as fake_goods_qty
+    , SLE.hide                                                                                                        as is_sale_hide
+    , SLT.hide                                                                                                        as is_sale_stock_hide
+    , SLT.restock_alarm                                                                                               as is_restock_alarm
+    , case when SLE.icon_type = '[""ONLY""]' then 1 else 0 end                                                          as is_exclusive_icon
+    , SLE.sold_out_icon                                                                                               as is_sold_out_icon_enabled
+    , SLE.alarm_percent_to_show_sold_out_icon                                                                         as sold_out_alarm_pc
+    , case when SLE.sold_out_icon = 1
+                and SLT.remaining_quantity < ((SLE.alarm_percent_to_show_sold_out_icon / 100) * SLT.sale_quantity )
+                and SLT.remaining_quantity > 0
+                then 1 else 0 
+                end                                                                                                   as will_be_sold_out
+    , case when SLE.cash is not null then 1 else 0 end                                                                as is_fixed_cash_amount
+    , SLE.cash                                                                                                        as fixed_cash_amount
+    , SLE.delivery_date                                                                                               as deliv_dt
+    , SLT.sale_quantity                                                                                               as sale_qty
+    , SLT.remaining_quantity                                                                                          as avail_sale_qty
+    , COMMON.title                                                                                                    as common_info
+    , GOG.manufacturer                                                                                                as manufacturer
+    , ORI.origins                                                                                                     as origins
+    , ORI.origins_ctry_name                                                                                           as origins_ctry_name
+    , TCOM.name                                                                                                       as trade_co_name
+-- DELIVERY
+    , SHIP.name                                                                                                       as ship_group_name
+    , DSD.service_code                                                                                                as deliv_service_dom_code
+    , DSD.display_name                                                                                                as deliv_service_dom_name
+    , DSO.service_code                                                                                                as deliv_service_over_code
+    , DSO.display_name                                                                                                as deliv_service_over_name
+-- PICK-UP
+    , PIC.name                                                                                                        as pickup_name
+    , PIC.location_name                                                                                               as pickup_location
+    , PIC.postal_code                                                                                                 as pickup_location_postal_code
+-- OTHER SETTINGS
+    , GDS_name.precautions                                                                                            as precautions
+    , GDS_name.notification_info                                                                                      as notification_info
+    , SLE_t.title                                                                                                     as sale_title
+    , SLE_t.comment                                                                                                   as sale_comment
+-- SALE DATE/RESERVATION
+    , SLE.sale_start_at                                                                                               as sale_start_at
+    , SLE.sale_end_at                                                                                                 as sale_end_at
+    , sort_array(REV.sale_reserv)                                                                                     as sale_reserv_history
+-- DATE
+    , GDS.created_at                                                                                                  as goods_cre_dt
+    , STK.updated_at                                                                                                  as stock_upd_dt
+    , SLE.created_at                                                                                                  as sale_cre_dt
+    , SLE.updated_at                                                                                                  as sale_upd_dt
+    , SLT.updated_at                                                                                                  as sale_stock_upd_dt
+    , timestamp(current_timestamp() + interval '9' hour)                                                              as run_timestamp
+    , '{key_date}'                                                                                                    as part_date
+    , '{key}'                                                                                                         as part_hour
+
+    from goods as GDS
+    left join goods_stock as GDT on GDS.goods_id = GDT.goods_id
+    left join stock as STK on GDT.stock_id = STK.stock_id
+    left join goods_option as GDO on STK.goods_option_id = GDO.goods_option_id
+    left join goods_option_group as GOG on GDO.goods_option_group_id = GOG.goods_option_group_id
+-- ORIGINS
+    left join 
+    (
+        select goods_option_group_id, collect_list(ctry_code) as origins, collect_list(ctry_name_en) as origins_ctry_name
+        from (
+        select a.*, b.ctry_name_en
+        from (
+            select distinct goods_option_group_id, explode(regexp_extract_all(upper(origins), r'([A-Z]+)')) as ctry_code
+            from goods_option_group
+        ) a
+        left join wev_prod.we_meta.we_country b on a.ctry_code = b.ctry_code
+        distribute by a.ctry_code
+        )
+        group by 1
+    ) as ORI on GDO.goods_option_group_id = ORI.goods_option_group_id
+    left join sale as SLE on GDS.goods_id = SLE.goods_id
+    left join sale_stock as SLT on SLE.sale_id = SLT.sale_id and GDO.goods_option_id = SLT.goods_option_id
+-- FIXED PRICE SOURCE
+    left join 
+    (
+        select 
+        FIX.sale_id
+        , max(case when FIX.currency_code = 'KRW' then FIX.fixed_sale_price else NULL end) as fixed_sale_price
+        , max(case when FIX.currency_code = 'USD' then FIX.fixed_sale_price else NULL end) as fixed_sale_price_USD
+        , max(case when FIX.currency_code = 'JPY' then FIX.fixed_sale_price else NULL end) as fixed_sale_price_JPY
+        from sale_fixed_price as FIX
+        inner join 
+        (
+        select 
+        sale_id
+        , currency_code
+        , max(updated_at) as updated_at 
+        from sale_fixed_price
+        group by sale_id, currency_code
+        ) as C1 on C1.sale_id = FIX.sale_id and C1.currency_code = FIX.currency_code and C1.updated_at = FIX.updated_at 
+        group by FIX.sale_id
+    ) as SFP on SLE.sale_id = SFP.sale_id
+-- CATEGORY SOURCE 
+    left join 
+    (
+        select distinct
+        a.goods_id
+        , min(case when b.parent_id < 0 then a.goods_category_id end) as goods_upr_cat_id
+        , max(case when b.parent_id > 0 then a.goods_category_id end) as goods_lwr_cat_id
+        from goods_goods_category a
+        left join goods_category b on a.goods_category_id = b.goods_category_id
+        group by a.goods_id
+    ) as GGC on GDS.goods_id = GGC.goods_id
+    left join 
+    (
+        select row_number()over(partition by goods_category_id order by created_at desc) as num, *
+        from goods_category
+    ) as GCU on GGC.goods_upr_cat_id = GCU.goods_category_id and GCU.num = 1
+    left join 
+    (
+        select row_number()over(partition by goods_category_id order by created_at desc) as num, *
+        from goods_category
+    ) as GCL on GGC.goods_lwr_cat_id = GCL.goods_category_id and GCL.num = 1  
+    left join we_mart.we_artist as ART 
+            on case when GCU.label_artist_id is null then GCL.label_artist_id = ART.ws_art_id else GCU.label_artist_id = ART.ws_art_id end
+-- NAME SOURCE 
+    left join 
+    (
+        select *, row_number() over(partition by goods_id, shop order by updated_at desc) as seq
+        from (
+            select distinct
+            goods_id
+            , case
+                when language = 'ko' then 'GL'
+                when language = 'en' then 'US'
+                when language = 'ja' then 'JP'
+                end as shop
+            , name as goods_name
+            , precautions
+            , notification_info
+            , updated_at
+            from goods_translation
+        )
+    ) as GDS_name on GDS.goods_id = GDS_name.goods_id and GDS.shop = GDS_name.shop and GDS_name.seq = 1
+    left join
+    (
+        select 
+        *
+        , max(case when language ='ko' then name end)over(partition by sale_stock_id) as sale_stock_name_ko
+        , max(case when language ='ja' then name end)over(partition by sale_stock_id) as sale_stock_name_ja
+        , max(case when language ='en' then name end)over(partition by sale_stock_id) as sale_stock_name_en
+        from weverseshop.sale_stock_name
+    ) as SLT_name on SLT_name.sale_stock_id = SLT.sale_stock_id and SLT_name.language = case when SLE.shop = 'GL' then 'ko' when SLE.shop = 'US' then 'en' when SLE.shop = 'JP' then 'ja' end 
+    left join weverseshop.common_info as COMMON on SLE.common_info_id = COMMON.common_info_id
+-- SHIP/DELIVERY SOURCE
+    left join shipping_group as SHIP on SLE.shipping_group_id = SHIP.shipping_group_id
+    left join weverseshop.delivery_service as DSD on SLE.delivery_service_domestic_id = DSD.delivery_service_id
+    left join weverseshop.delivery_service as DSO on SLE.delivery_service_overseas_id = DSO.delivery_service_id
+-- TRADE COMPANY
+    left join trade_company as TCOM on GOG.trade_company_id = TCOM.trade_company_id
+-- MEMBERSHIP
+    left join membership.membership as MEM on GDO.goods_option_code = MEM.membership_code
+-- BM_OPTION
+    left join wev_prod.settlement.settlement_category ST_CAT on ST_CAT.settlement_category_id = GOG.settlement_category_id
+-- SALE DISPLAY NAME
+    left join
+    (
+        select 
+        a.sale_id
+        , collect_set(trim(b.name)) as sale_upr_cat_name
+        , collect_set(case when trim(c.name) is null then trim(b.name) else trim(c.name) end) as sale_lwr_cat_name
+        from weverseshop.artist_sale a
+        left join weverseshop.goods_category b on b.goods_category_id = a.parent_goods_category_id
+        left join weverseshop.goods_category c on c.goods_category_id = a.child_goods_category_id
+        group by 1
+    ) as SLC_name ON SLE.sale_id = SLC_name.sale_id
+-- BOM
+    left join
+    (
+        select distinct 
+        a.goods_option_id
+        , collect_list(b.sap_code) as component_sap_codes
+        from weverseshop.goods_option_component as a 
+        left join weverseshop.goods_option as b on a.goods_option_child_id = b.goods_option_id
+        group by 1
+    ) as GOC ON GOC.goods_option_id = GDO.goods_option_id 
+    left join weverseshop.sale_translation as SLE_t on SLE_t.sale_id = SLE.sale_id and SLE_t.language = case when SLE.shop = 'GL' then 'ko' when SLE.shop = 'US' then 'en' when SLE.shop = 'JP' then 'ja' end 
+    left join weverseshop.pickup PIC on GDS.pickup_id = PIC.pickup_id
+-- FC
+    left join 
+    (
+        select   
+        distinct
+        benefit_code
+        ,case when benefit_code rlike r'_V([0-9]*)$' then regexp_extract(benefit_code, r'_(V[0-9]*)$', 1) 
+            when benefit_code rlike r'MB([0-9]*)$' then concat('V',floor((regexp_extract(benefit_code, r'MB([0-9]*)$', 1) + 7)/4))
+            end as fc_ver
+        ,case when benefit_code rlike r'_V([0-9]*)$' then regexp_extract(benefit_code, r'_V([0-9]*)$', 1) 
+            when benefit_code rlike r'MB([0-9]*)$' then floor(regexp_extract(benefit_code, r'MB([0-9]*)$', 1))
+            end as fc_kit_ver
+        ,case   when benefit_code = 'GL_BTSMBS_MB1' then 'GL_BTMS_MB1'
+                when benefit_code = 'GL_BTSMBS_MB2' then 'GL_BTMS_MB2'
+                when benefit_code = 'GL_BTSMBS_MB3' then 'GL_BTMS_MB3'
+                when benefit_code = 'GL_BTSMBS_MB4' then 'GL_BTMS_MB4'
+                when benefit_code = 'US_BTSMBS_MB1' then 'US_BTMS_MB1'
+                when benefit_code = 'US_BTSMBS_MB2' then 'US_BTMS_MB2'
+                when benefit_code = 'US_BTSMBS_MB3' then 'US_BTMS_MB3'
+                when benefit_code = 'US_BTSMBS_MB4' then 'US_BTMS_MB4'
+                when benefit_code = 'JP_BTSMBS_MB1' then 'JP_BTMS_MB1'
+                when benefit_code = 'JP_BTSMBS_MB2' then 'JP_BTMS_MB2'
+                when benefit_code = 'JP_BTSMBS_MB3' then 'JP_BTMS_MB3'
+                when benefit_code = 'JP_BTSMBS_MB4' then 'JP_BTMS_MB4'
+                when benefit_code = 'GL_BTSMBS_KIT_V2' then 'GL_BTSMS_KIT'
+                when benefit_code = 'US_BTSMBS_KIT_V2' then 'US_BTSMS_KIT'
+                when benefit_code = 'JP_BTSMBS_KIT_V2' then 'JP_BTSMS_KIT'
+                when benefit_code = 'GL_EHMBS_KIT_V1' then 'GL_EHMBS_KIT'
+                when benefit_code = 'US_EHMBS_KIT_V1' then 'US_EHMBS_KIT'
+                when benefit_code = 'JP_EHMBS_KIT_V1' then 'JP_EHMBS_KIT'
+                when benefit_code = 'GL_SVTMBS_KIT_V1' then 'GL_SVTMBS_KIT'
+                when benefit_code = 'GL_TXTMBS_KIT_V2' then 'GL_TXTMBS_V2_KIT'
+                when benefit_code = 'US_TXTMBS_KIT_V2' then 'US_TXTMBS_V2_KIT'
+                when benefit_code = 'JP_TXTMBS_KIT_V2' then 'JP_TXTMBS_V2_KIT'
+                when benefit_code = 'GL_BPG0001' then 'BPG0001'
+                when benefit_code = 'GL_NJSMBS_KIT_PREMIUM_V1' then 'GL_NEWJEANSMBSPREMIUM_KIT_V1'
+                when benefit_code = 'GL_NJSMBS_KIT_GENERAL_V1' then 'GL_NEWJEANSMBSGENERAL_KIT_V1'
+                when benefit_code = 'JP_NJSMBS_KIT_GENERAL_V1' then 'JP_NEWJEANSMBSGENERAL_KIT_V1'
+                when benefit_code = 'JP_NJSMBS_KIT_PREMIUM_V1' then 'JP_NEWJEANSMBSPREMIUM_KIT_V1'
+                else benefit_code end as goods_code
+        from wev_prod.membership.benefit a
+        left join wev_prod.membership.membership_benefit b on b.benefit_id = a.benefit_id
+        left join wev_prod.membership.membership c on c.membership_id = b.membership_id
+        left join wev_prod.membership.artist_shop_version d on d.artist_shop_version_id = c.artist_shop_version_id
+        left join wev_prod.membership.membership_version e on e.membership_version_id = d.membership_version_id
+        where a.benefit_id not in (75,76,77) -- TEST 제외
+        and a.benefit_kind != 'GIFT'
+    ) as FC on GDS.goods_code = FC.goods_code
+-- SALE RESERVATION
+    left join 
+    (
+        select sale_id
+        , collect_list(named_struct('reserv_dt', reserv_dt, 'hide', tobe_status:hide, 'sale_status', tobe_status:saleStatus, 'reserv_status', status)) as sale_reserv
+        from (
+        select distinct b.*
+        , a.target_id as sale_id
+        , from_unixtime(b.reservation_at) + interval 9 hours as reserv_dt
+        from wev_prod.product.status_reservation_item a
+        left join wev_prod.product.status_reservation b on a.status_reservation_id = b.status_reservation_id
+        distribute by b.status_reservation_id
+        )
+        group by 1
+    ) REV on SLE.sale_id = REV.sale_id
+)
+)
+where seq = 1
+'''
+df = fin_df(df_q, mode)"
+11,md,,just_heading,#### RUN
+12,py,,code,"# 중복 값 확인
+check = df.groupBy('sale_stock_id').count()
+check_cnt = check.where('count > 1 and sale_stock_id is not null').count()
+
+# RUN MAIN QUERY
+if check_cnt > 1:
+    send_message_to_slack('sale_stock_id_unique')
+else:
+    b = Dataflow(run_mode=run_mode, notifier=noti)
+    b.run(dataframe=df, table_info=table, option=option, buckets=['databricks'])"
+13,md,,just_heading,#### Appendix
+14,md,,just_heading,##### create query
+15,py,,code,"""""""
+create = '''
+CREATE TABLE IF NOT EXISTS we_mart.ws_goods_stock (
+	goods_id	bigint	comment	'상품 id'
+,	sale_id	bigint	comment	'판매 id'
+,	stock_id	bigint	comment	'입고 id'
+,	sale_stock_id	bigint	comment	'판매상품 옵션 id'
+,	goods_upr_cat_id	bigint	comment	'상위카테고리 id'
+,	goods_lwr_cat_id	bigint	comment	'하위카테고리 id'
+,	we_art_id	int	comment	'아티스트 id'
+,	goods_option_id	bigint	comment	'상품 옵션 id'
+,	goods_option_group_id	bigint	comment	'상품 옵션 그룹 id'
+,	trade_co_id	bigint	comment	'거래처 id'
+,	pickup_id	bigint	comment	'현장수령 id'
+,	ship_group_id	bigint	comment	'배송그룹 id'
+,	deliv_service_dom_id	bigint	comment	'국내 배송사 id'
+,	deliv_service_over_id	bigint	comment	'해외 배송사 id'
+,	fc_id	bigint	comment	'멤버십 id'
+,	fc_cat_id	bigint	comment	'멤버십 카테고리 id'
+,	goods_code	string	comment	'상품 code'
+,	goods_option_code	string	comment	'상품 옵션 code'
+,	barcode	string	comment	'바코드'
+,	wms_code	string	comment	'WMS_ID'
+,	sap_code	string	comment	'SAP 자재코드'
+,	wbs_code	string	comment	'WBS 코드'
+,	hscode	string	comment	'HS Code'
+,	pod_option_sell_code	string	comment	'POD 상품 옵션 판매 코드'
+,	pod_template_code	string	comment	'POD 템플릿 코드'
+,	pod_resource_id	string	comment	'POD 리소스 ID'
+,	pod_product_code	string	comment	'POD 상품 코드'
+,	pod_product_type	string	comment	'POD 상품 유형'
+,	bm_option	string	comment	'bm_option'
+,	settlement_category_name	string	comment	'정산 카테고리명'
+,	settlement_category_code	string	comment	'정산 카테고리코드'
+, 	vertex_commodity_code_type string comment 'Vertex 상품코드타입'
+, 	vertex_commodity_code_value string comment 'Vertex 상품코드'
+, 	tax_type string comment '세금구분'
+,	shop	string	comment	'shop'
+,	we_art_name	string	comment	'아티스트명'
+,	goods_upr_cat_name	string	comment	'상위카테고리명'
+,	goods_lwr_cat_name	string	comment	'하위카테고리명'
+,	sale_upr_cat_name	string	comment	'앱노출 상위카테고리'
+,	sale_lwr_cat_name	string	comment	'앱노출 하위카테고리'
+,	goods_cat	string	comment	'상품구분 (마트만들며 생성)'
+,	goods_section	string	comment	'상품구분'
+,	goods_type	string	comment	'상품 유형 (배송상품, 디지털상품)'
+,	goods_option_type	string	comment	'상품 종류 (유형, 무형)'
+,	goods_option_receipt_type	string	comment	'입고 유형 (NORMAL, SET, RANDOM)'
+,	logi_cat	string	comment	'물류 카테고리'
+,	fc_ver string comment 'FC 버전'
+,	fc_kit_ver	string	comment	'키트 버전'
+,	is_bom_enabled	int	comment	'BOM 유무'
+,	bom_sap_codes	array<string>	comment	'BOM sap_code모음(array)'
+,	goods_name	string	comment	'상품명'
+,	goods_option_name	string	comment	'상품 옵션명'
+,	goods_option_group_name	string	comment	'상품 옵션 그룹명'
+,	sale_stock_name_ko	string	comment	'sale_stock명(한)'
+,	sale_stock_name_ja	string	comment	'sale_stock명(일)'
+,	sale_stock_name_en	string	comment	'sale_stock명(영)'
+,	release_name	string	comment	'상품출하명'
+,	currency_code	string	comment	'통화'
+,	original_price	double	comment	'상품 정가'
+,	sale_price	double	comment	'판매가격'
+,	is_fixed_price	tinyint	comment	'고정가격 여부'
+,	final_sale_price	double	comment	'최종 판매가격 (고정가격인 경우 고정가격을 판매가격으로 함)'
+,	fixed_sale_price	double	comment	'고정 판매가'
+,	fixed_sale_price_USD	double	comment	'고정 판매가 (USD)'
+,	fixed_sale_price_JPY	double	comment	'고정 판매가 (JPY)'
+,	max_ord_qty	int	comment	'최대 구매가능수량'
+,	max_ord_lim_type	string	comment	'최대 구매수량 조건값'
+,	max_ord_lim_p_user	tinyint	comment	'최대 구매수량 회원별 주문제약 여부'
+,	sale_alrarm_pc	tinyint	comment	'재고알림 % (판매등록 수량의 n%가 되었을 경우 알람받기)'
+,	min_ord_qty	int	comment	'최소 주문가능수량'
+,	is_cart	tinyint	comment	'카트사용여부'
+,	is_tax	tinyint	comment	'판매세적용 여부'
+,	is_incl_tax	tinyint	comment	'상품가격에 판매세포함 여부'
+,	sale_status	string	comment	'판매 상태'
+,	shop_tags	string	comment	'샵 태그'
+, 	is_digital_live tinyint comment '디지털 라이브 상품 여부'
+,	weight	double	comment	'중량'
+,	package_size	string	comment	'패키지 사이즈'
+,	album_qty	int	comment	'앨범 수량'
+,	business_type	string	comment	'거래방식 (1:사입, 2:위탁)'
+,	tot_goods_qty	int	comment	'총 입고 수량 (누적)'
+,	exp_goods_qty	int	comment	'입고 요청한 수량'
+,	real_goods_qty	int	comment	'실제 입고된 수량'
+,	fake_goods_qty	int	comment	'가입고 수량'
+,	is_sale_hide	tinyint	comment	'노출여부 (판매 상태의 더미)'
+,	is_sale_stock_hide	tinyint	comment	'판매 옵션 노출 여부'
+,	is_restock_alarm	tinyint	comment	'재입고알림 설정 여부'
+,	is_exclusive_icon	int	comment	'단독판매 여부'
+,	is_sold_out_icon_enabled	tinyint	comment	'솔드아웃 경고 노출 설정'
+,	sold_out_alarm_pc	tinyint	comment	'솔드아웃 경고 노출 percent(%)'
+,	will_be_sold_out	int	comment	'솔드아웃 경고중'
+,	is_fixed_cash_amount	int	comment	'개별 캐시 설정 사용'
+,	fixed_cash_amount	double	comment	'설정 캐시(KRW)'
+,	deliv_dt	timestamp	comment	'배송 예정일시'
+,	sale_qty	int	comment	'판매수량'
+,	avail_sale_qty	int	comment	'판매가능수량'
+,	common_info	string	comment	'교환/반품 공통정보'
+,	manufacturer	string	comment	'제조사'
+, 	origins array<string> comment '원산지(국가코드)'
+, 	origins_ctry_name array<string> comment '원산지(국가명-영문)'
+,	trade_co_name	string	comment	'거래처'
+,	ship_group_name	string	comment	'배송그룹 이름'
+,	deliv_service_dom_code	string	comment	'국내 배송사 코드'
+,	deliv_service_dom_name	string	comment	'국내 배송사 이름'
+,	deliv_service_over_code	string	comment	'해외 배송사 코드'
+,	deliv_service_over_name	string	comment	'해외 배송사 이름'
+,	pickup_name	string	comment	'픽업 명'
+,	pickup_location	string	comment	'픽업 장소'
+,	pickup_location_postal_code	string	comment	'픽업 장소 우편번호'
+,	sale_start_at timestamp comment '판매 시작일'
+, 	sale_end_at timestamp comment '판매 종료일'
+, 	sale_reserv_history array<struct<reserv_dt:string,hide:string,sale_status:string,reserv_status:string>> comment '판매 상태 예약정보'
+,	goods_cre_dt	timestamp	comment	'상품등록일'
+,	stock_upd_dt	timestamp	comment	'재고업데이트일'
+,	sale_cre_dt	timestamp	comment	'판매등록일'
+,	sale_upd_dt	timestamp	comment	'판매 업데이트일'
+,	sale_stock_upd_dt	timestamp	comment	'판매재고 업데이트일'
+,	run_timestamp	timestamp
+,	part_date	string	comment	'파티션 일자'
+
+--### ws_goods_stock_hourly 테이블 추가 항목
+-- ,	precautions	string	comment	'상품유형사항'
+-- ,	notification_info	string	comment	'상품고지정보'
+-- ,	sale_title	string	comment	'판매 타이틀'
+-- ,	sale_comment	string	comment	'판매 코멘트'
+-- ,	part_hour	string	comment	'파티션 시간'
+
+)
+using DELTA
+partitioned by (part_date)
+comment '위버스샵 상품 메타정보 (재고, 판매정보 포함)'
+'''
+# spark.sql(create)
+"""""""
+16,md,,just_heading,##### REFERENCE (WAREHOUSE)
+17,py,,code,"""""""
+%sql
+--   -- WAREHOUSE SOURCE
+--   left join 
+--   (
+--     select distinct
+--     STH0.goods_option_id
+--     , STH0.memo
+--     , STH0.import_due_date
+--     , STH0.status as warehouse_status
+--     , STH0.logistics_category
+--     , WAR.name as warehouse_name
+--     from weverseshop.stock_history as STH0
+--     left join weverseshop.warehouse as WAR on STH0.warehouse_id = WAR.warehouse_id
+--     inner join 
+--     (
+--       select 
+--       goods_option_id
+--       , max(created_at) as created_at
+--       , max(memo) as memo
+--       from weverseshop.stock_history
+--       group by goods_option_id
+--     ) as STH1 on STH0.goods_option_id = STH1.goods_option_id and STH0.created_at = STH1.created_at and STH0.memo = STH1.memo
+--   ) as STH2 on STK.goods_option_id = STH2.goods_option_id
+"""""""
+18,py,,code,"# dbutils.widgets.text('mode', 'daily')
+# dbutils.widgets.text('target_date', '2024-05-01')
+# dbutils.widgets.text('target_hour', '13')
+# dbutils.widgets.text('run_mode', 'prod')
+"

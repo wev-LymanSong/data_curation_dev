@@ -2,8 +2,6 @@ import streamlit as st
 from streamlit_ace import st_ace, KEYBINDINGS, LANGUAGES, THEMES
 from specification_builder import SpecificationBuilder
 import os
-import time
-import pyautogui
 ## https://discuss.streamlit.io/t/web-markdown-editor/64329
 
 @st.dialog("Save Markdown file as")
@@ -18,6 +16,7 @@ def regen_all(sb, file_name):
     sb.collect_static_data()
     sb.generate_semantic_data("TABLE_NOTICE")
     sb.generate_semantic_data("HOW_TO_USE")
+    sb.generate_semantic_data("DOWNSTREAM_TABLE_INFO")
     sb.build_mdfile()
     return True
 
@@ -72,11 +71,13 @@ with st.sidebar:
         sb = SpecificationBuilder(target_table.split(".")[0])
         sb.read_mdfile()
         if st.button("🎲 전체 파일 재생성"):
-             regen_all(sb, target_table)
+            regen_all(sb, target_table)
         if st.button("🎲 TABLE NOTICE 재생성"):
-             regen_component(sb, target_table, "TABLE_NOTICE")
+            regen_component(sb, target_table, "TABLE_NOTICE")
         if st.button("🎲 HOW TO USE 재생성"):
-             regen_component(sb, target_table, "HOW_TO_USE")
+            regen_component(sb, target_table, "HOW_TO_USE")
+        if st.button("🎲 DOWNSTREAM TABLE INFO 재생성"):
+            regen_component(sb, target_table, "DOWNSTREAM_TABLE_INFO")
         with open(f"data/specs/{target_table}", "rb") as f:
             file = f.read().decode('utf-8')
         default_content = file

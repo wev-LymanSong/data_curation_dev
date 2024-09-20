@@ -140,7 +140,7 @@ class StaticDataCollector(object):
             source_code_lang=source_code_lang
         )
         code_df = GithubConnector.to_df(code_blocks=code_blocks)
-        code_df.to_csv(os.path.join(SOURCECODE_DIR, f"{self.target_field}.csv"))
+        code_df.to_csv(os.path.join(SOURCECODE_DIR, f"{self.target_table}.csv"))
         return code_df
     
     def get_basic_info_settings(self, code_df):

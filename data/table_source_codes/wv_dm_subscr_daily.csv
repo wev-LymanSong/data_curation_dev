@@ -1,0 +1,598 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.wv_dm_subscr_daily
+2,md,,basic_info,"#### Basic Info
+* WDM 구독현황 이력 
+* MART PRIMARY
+* DAILY APPEND
+
+###### history
+|date|contributor|comments|
+|----|----|----|
+|2024-07-01 |박상민| 마트 생성, wv_dm_subscr_history 대체|
+|2024-07-10 |박상민| IAP 구독 갱신 케이스 처리, start_at 오류 별도 테이블 참고 로직 생성|
+|2024-07-25 |박상민| DM_ID 기준 수정 |
+|2024-08-08 |박상민| IAP 구독 갱신 케이스 처리, start_dt/original_start_dt 구분으로 범용 대응|
+
+###### Source Tables
+* wev_prod.subscribe.subscribe_history
+* wev_prod.subscribe.reservation_history
+* wev_prod.weverse2.wdm_common_dm
+* wev_prod.weverse2.wdm_subscription
+* wev_prod.we_mart.we_user
+* wev_prod.we_mart.wv_comm_user
+* wev_prod.we_mart.ws_fc_user_history
+* wev_prod.we_mart.we_artist"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"")
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'wv_dm_subscr_daily', 
+  'service' : 'weverse',
+  'partition' : ['part_date']
+}
+
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'append', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+  'delete' : True,
+  'delete_key' : 'part_date'
+}
+
+"
+6,md,,just_heading,#### MAIN QUERY
+7,md,,just_heading,##### 로그 불러오기 (history)
+8,py,,code,"history = spark.sql(f""""""
+select 
+x.*
+except(x.start_at, x.subscribe_start_at) 
+, nvl(mod_start.mod_start_at , x.start_at) as start_at
+, nvl(mod_subscr_start.mod_subscribe_start_at, x.subscribe_start_at) as subscribe_start_at
+from
+(
+select
+case
+  when status in ('EXPIRATION') then expiration_at 
+  when status in ('TERMINATION') then ended_at
+  when status in ('SUBSCRIBING') and event_type in ('CHANGE_SUBSCRIPTION', 'START_FIRST_SUBSCRIPTION')                      then start_at 
+  when status in ('SUBSCRIBING') and event_type in ('RENEWAL_SUBSCRIPTION') and reason in ('갱신 완료', '만료 후 직접 갱신')  then start_at 
+  when status in ('SUBSCRIBING') and event_type in ('START_RE_SUBSCRIPTION') and reason in ('구독 중')                      then start_at 
+  else created_at
+  end as key_dt 
+, case when account_id rlike 'DEACTIVATED' then SUBSTRING(account_id, 1, INSTR(account_id, '_') - 1)
+      else account_id end as account_id2
+, * 
+from 
+wev_prod.subscribe.subscribe_history 
+where 1=1
+and service_code = 'WDM'
+and created_at <= date('{key}')   + interval '25' hour -- # 15분 lag 이 발상하나 넉넉히 1시간 추가 입수 
+) as x 
+--- # start_at 이슈처리 
+LEFT JOIN wev_prod.we_meta.wv_dm_subscr_exc as mod_start
+ON x.subscribe_id = mod_start.subscribe_id and x.start_at = mod_start.start_at and mod_start.issue_type = 'START_AT'
+--- # subscribe_start_at 이슈처리 
+LEFT JOIN wev_prod.we_meta.wv_dm_subscr_exc as mod_subscr_start
+ON x.subscribe_id = mod_subscr_start.subscribe_id and x.start_at = mod_subscr_start.start_at and mod_start.issue_type = 'SUBSCR_START_AT'
+"""""")
+
+history.createOrReplaceTempView(""history"")"
+9,md,,just_heading,##### 로그 정리 및 케이스 판별 (base)
+10,py,,code,"base = spark.sql(f""""""
+select 
+*
+from
+        (
+        select
+        *        
+        -- # 날짜 판별 
+        , nvl(new_start_at, start_at) as start_dt 
+        , start_at as original_start_dt
+        -- # 실제 종료일 판별 
+        , min(case
+                        when (is_end_renew_auto = 1 or is_end_renew_manual = 1 )
+                                and nvl(next_new_start_at, next_start_at) != nvl(new_start_at, start_at)
+                                -- # IAP 결제 시점에 따라 다른 처리 
+                                then case
+                                        when next_new_start_at < next_start_at then next_start_at
+                                        when next_new_start_at >= next_start_at then next_new_start_at  
+					when next_new_start_at is null then next_start_at  
+					end
+                        when (is_end_change_type = 1 or is_end_migration = 1) 
+                                and next_start_at != start_at
+                                then next_start_at                           
+                        when is_end_change_failed = 1  then  expire_dt
+                        when is_terminate = 1 then ended_at end)
+                over(partition by subscr_term_key) as real_end_dt
+        , first_value(case when (is_end_renew_auto = 0 and is_end_renew_manual = 0 and is_end_change_type = 1) then null else ended_at end)
+                over(partition by subscr_term_key order by subscribe_history_id ROWS BETWEEN UNBOUNDED PRECEDING and UNBOUNDED FOLLOWING) as final_renew_target_dt     
+        from 
+                (
+                select        
+                *
+                -- # status 판별 
+                -- ## 시작 
+                , case when status = 'SUBSCRIBING' and event_type = 'START_FIRST_SUBSCRIPTION'  then 1 else 0 end as is_new
+                , case when status = 'SUBSCRIBING' and event_type = 'START_RE_SUBSCRIPTION'     and reason not in ('마이그레이션 변경') then 1 else 0 end as is_return
+                , case when status = 'SUBSCRIBING' and event_type = 'START_RE_SUBSCRIPTION'     and reason rlike '마이그레이션' then 1 else 0 end as is_migration
+                -- ## 갱신 판별                                
+                , case when status = 'SUBSCRIBING' and event_type = 'RENEWAL_SUBSCRIPTION'      then 1 else 0 end as is_renew 
+                , case when status = 'SUBSCRIBING' and event_type = 'RENEWAL_SUBSCRIPTION' and nvl(new_start_at, start_at) = prev_expire_dt then 1 else 0 end as is_renew_auto    
+                -- ## 자동 갱신으로 인한 이용권 종료                
+                , case when status = 'SUBSCRIBING' and next_event_type = 'RENEWAL_SUBSCRIPTION' and expire_dt = nvl(next_new_start_at, next_start_at) then 1 else 0 end is_end_renew_auto                
+                -- ## 수동 갱신으로 인한 이용권 종료
+                , max(case when status = 'EXPIRATION' and event_type in  ('EXPIRATION_SUBSCRIPTION', 'RENEWAL_SUBSCRIPTION') 
+                         and next_event_type = 'RENEWAL_SUBSCRIPTION' and next_status = 'SUBSCRIBING'
+                         then 1 else 0 end)over(partition by subscr_term_key) is_end_renew_manual
+                -- ## 만료 판별 
+                , case when (status = 'EXPIRATION' and event_type in ('EXPIRATION_SUBSCRIPTION', 'RENEWAL_SUBSCRIPTION') )                         
+                        then 1 else 0 end is_expire
+                -- ## 이용권 종료 
+                , case when status = 'TERMINATION' then 1 else 0 end is_terminate
+                , max(case when status = 'TERMINATION' and reason rlike ('환불|취소|cancel') then 1 else 0 end)
+                        over(partition by subscr_term_key) as is_refund                               
+                -- ## 이용권 변경으로 인한 종료 
+                , max(case when (status = 'EXPIRATION' and next_status = 'SUBSCRIBING' and subscr_type_dtl != next_subscr_type_dtl)
+                                    or (status = 'EXPIRATION' and status = 'CHANGE_SUBSCRIPTION' )                          
+                                    then 1 else 0 end)
+                        over(partition by subscr_term_key) as is_end_change_type
+                -- ## 이용권 변경으로 인한 신규 시작 
+                , case when (status = 'SUBSCRIBING' and prev_status = 'EXPIRATION' and subscr_type_dtl != prev_subscr_type_dtl)
+                                    or (status = 'SUBSCRIBING' and status = 'CHANGE_SUBSCRIPTION')
+                                    then 1 else 0 end as is_start_change_type      
+                -- ## 이용권 변경 실패 후 갱신 
+                , max(case when status = 'EXPIRATION' and event_type = 'CHANGE_SUBSCRIPTION' and (next_event_type != 'CHANGE_SUBSCRIPTION'  or next_event_type is NULL)
+                         then 1 else 0 end)over(partition by subscr_term_key) as is_end_change_failed
+                -- ## 마이그레이션으로 인한 종료 
+                , max(case when next_reason rlike '마이그레이션' then 1 else 0 end)over(partition by subscr_term_key) as is_end_migration 
+                from 
+                        (
+                        select *
+                        -- # 전후 로그 비교를 위한 변수 생성2 (보정 시작 일시)
+                        , lead(new_start_at)over(partition by subscribe_id order by subscribe_history_id)           as next_new_start_at
+                        from
+                                (
+                                select *         
+                                -- # IAP 갱신 발생 시 start_at 이 만료일에 들어오지 않는 경우 강제 보정 
+                                -- # 단, 만료일 일주일 전에 발생 한 경우만 모정 
+                                , max(case when start_at != prev_start_at
+                                        and subscr_type_dtl in ('R_AND', 'R_IOS') and subscr_type_dtl = prev_subscr_type_dtl                        
+                                        and status = 'SUBSCRIBING' and prev_status = 'SUBSCRIBING' and event_type = 'RENEWAL_SUBSCRIPTION'
+                                        and start_at between (prev_expire_dt - interval '7' days) and prev_ended_at
+                                        then prev_expire_dt end)over(partition by subscr_term_key) as new_start_at 
+                                from
+                                        (
+                                        select 
+                                        date('{key}') as key_date
+                                        -- # 최초 만료/해지 일자 
+                                        , first_value(expire_dt)over(partition by subscr_term_key order by subscribe_history_id ROWS BETWEEN UNBOUNDED PRECEDING and UNBOUNDED FOLLOWING) as original_exp_dt
+                                        , first_value(ended_at)over(partition by subscr_term_key order by subscribe_history_id ROWS BETWEEN UNBOUNDED PRECEDING and UNBOUNDED FOLLOWING)  as original_end_dt
+                                        -- # 최종 상태 
+                                        , last_value(status)over(partition by subscribe_id order by subscribe_history_id ROWS BETWEEN UNBOUNDED PRECEDING and UNBOUNDED FOLLOWING)                   as last_status 
+                                        , last_value(status)over(partition by subscribe_id, subscr_term_key order by subscribe_history_id ROWS BETWEEN UNBOUNDED PRECEDING and UNBOUNDED FOLLOWING)  as last_term_status 
+                                        , case when max(start_at)over(partition by subscribe_id) = start_at then 1 else 0 end is_last_term
+                                        -- # 밑에 있던거    
+                                        , account_id
+                                        , is_deactivate                                                                      
+                                        , subscribe_history_id, key_dt, subscribe_id
+                                        , account_id
+                                        , product_id, store_item_id, service_product_code
+                                        , subscr_term_key, subscr_type_dtl
+                                        , subscribe_type, market_type
+                                        , status, event_type, reason     
+                                        , renewal_billing_days, expired_days
+                                        , subscribe_start_at, start_at, created_at, next_payment_at
+                                        , expiration_at , ended_at, expire_dt
+                                        -- # 전후 로그 비교를 위한 변수 생성
+                                        -- ## next
+                                        , lead(subscr_type_dtl)over(partition by subscribe_id order by subscribe_history_id)    as next_subscr_type_dtl
+                                        , lead(event_type)over(partition by subscribe_id order by subscribe_history_id)         as next_event_type
+                                        , lead(status)over(partition by subscribe_id order by subscribe_history_id)             as next_status
+                                        , lead(start_at)over(partition by subscribe_id order by subscribe_history_id)           as next_start_at
+                                        , lead(expire_dt)over(partition by subscribe_id order by subscribe_history_id)          as next_expire_dt
+                                        , lead(ended_at)over(partition by subscribe_id order by subscribe_history_id)           as next_ended_at
+                                        , lead(reason)over(partition by subscribe_id order by subscribe_history_id)             as next_reason
+                                        -- # prev
+                                        , lag(subscr_type_dtl)over(partition by subscribe_id order by subscribe_history_id)     as prev_subscr_type_dtl
+                                        , lag(event_type)over(partition by subscribe_id order by subscribe_history_id)          as prev_event_type
+                                        , lag(status)over(partition by subscribe_id order by subscribe_history_id)              as prev_status
+                                        , lag(reason)over(partition by subscribe_id order by subscribe_history_id)              as prev_reason
+                                        , lag(start_at)over(partition by subscribe_id order by subscribe_history_id)            as prev_start_at
+                                        , lag(expire_dt)over(partition by subscribe_id order by subscribe_history_id)           as prev_expire_dt                         
+                                        , lag(ended_at)over(partition by subscribe_id order by subscribe_history_id)            as prev_ended_at                       
+                                        from
+                                                (
+                                                select 
+                                                subscribe_history_id, key_dt, subscribe_id
+                                                , account_id2 as account_id
+                                                , case when account_id rlike 'DEACTIVATED' then 1 else 0 end as is_deactivate
+                                                , product_id, store_item_id, service_product_code
+                                                -- #  구분자 ID 생성 
+                                                , concat(  string(date_format(start_at, 'yyyyMMddHHmmss')), '_'                                       
+                                                        ,  case when subscribe_type = 'REGULAR_PASS' then 'R' else 'P' end, '_'
+                                                        , case when market_type = 'WEVERSE'  then 'W'
+                                                        when market_type = 'PLAYSTORE'   then 'A'
+                                                        when market_type = 'APPSTORE'    then 'I'
+                                                        end 
+                                                        , '_' , string(subscribe_id)                                                                             
+                                                        ) as subscr_term_key
+                                                ,   concat( case when subscribe_type = 'REGULAR_PASS' then 'R' else 'P' end, '_'
+                                                        , case when market_type = 'WEVERSE'  then 'WEV'
+                                                        when market_type = 'PLAYSTORE'   then 'AND'
+                                                        when market_type = 'APPSTORE'    then 'IOS'
+                                                        end 
+                                                        ) as subscr_type_dtl                                        
+                                                , subscribe_type, market_type
+                                                , status, event_type, reason        
+                                                , renewal_billing_days
+                                                , date_diff(next_payment_at, subscribe_start_at )  - renewal_billing_days as expired_days
+                                                -- # 일자 
+                                                , subscribe_start_at, start_at, created_at, next_payment_at
+                                                , expiration_at 
+                                                , ended_at  
+                                                -- # 수정 일자 
+                                                , ended_at - interval '7' days as expire_dt
+                                                from history
+                                                where 1=1
+                                                --and date('{key}') >= date(start_at) 
+                                                --and date(key_dt) <= date('{key}')   
+                                                --and subscribe_id = 43825    
+                                                -- and subscribe_id = 109213              
+                                                -- # 구독 예약 로그 제외 
+                                                and not ( status = 'TO_CANCEL_RESERVATION' and event_type = 'UNSUBSCRIBE' )
+                                                and not ( status = 'SUBSCRIBING' and event_type = 'RESUME_SUBSCRIPTION' )
+                                                ) as A
+                                        order by a.subscribe_history_id 
+                                        ) as B
+                                ) as C
+                        ) as D
+                ) as E
+        ) as F
+where date(start_dt) <= date('{key}') and date(nvl(real_end_dt, original_end_dt)) >= date('{key}') --# 해지전/종료전 구독 로그만 가져옴 
+order by subscribe_history_id
+"""""")
+
+base.createOrReplaceTempView('base')"
+11,md,,just_heading,##### 일별 데이터 생성(subscr_daily)
+12,py,,code,"daily = spark.sql(f""""""
+select 
+*
+from
+(
+select 
+distinct key_date, subscribe_id, account_id, subscr_type_dtl, subscr_term_key, is_last_term
+, case
+        when is_new = 1         then 'NEW'
+        when is_return = 1      then 'RETURN'
+        when is_migration = 1   then 'MIGRATION'
+        when is_renew = 1 and is_renew_auto = 1 then 'RENEW_AUTO'
+        when is_renew = 1 and is_renew_auto = 0 and is_start_change_type = 1 then 'RENEW_CHANGE'
+        when is_renew = 1 and is_renew_auto = 0 and is_start_change_type = 0 then 'RENEW_MANUAL'
+        when is_start_change_type = 1 then 'CHANGE'
+        end as start_type
+, case
+        when is_end_migration = 1 then 'MIGRATION'
+        when is_refund = 1 then 'REFUND'  
+        when is_end_change_failed = 1 then 'CHANGE_FAILED'
+        when is_end_renew_manual = 1 and is_end_change_type = 1 then 'RENEW_CHANGE'
+        when is_end_renew_manual = 0 and is_end_change_type = 1 then 'CHANGE'
+        when is_end_renew_manual = 1 and is_end_change_type = 0 then 'RENEW_MANUAL'
+        when is_end_renew_auto = 1 then 'RENEW_AUTO'                      
+        when is_terminate = 1 then 'TERMINATE'
+        when is_expire = 1 then 'EXPIRED'
+        when is_last_term = 1 and last_status = 'SUBSCRIBING' then 'SUBSCRIBE'
+        end as end_type        
+, subscribe_start_at as new_dt
+, start_dt       
+, original_start_dt  
+, original_exp_dt     
+, original_end_dt  
+, real_end_dt      
+, final_renew_target_dt  
+, subscribe_type, market_type
+, product_id, store_item_id, service_product_code
+from
+        (
+        select 
+        distinct key_date, subscribe_id, account_id
+        , subscribe_type, market_type, subscr_type_dtl, subscr_term_key
+        , subscribe_start_at, start_dt, original_start_dt, original_exp_dt, original_end_dt, final_renew_target_dt
+        , product_id, store_item_id, service_product_code
+        , is_last_term, last_status
+        , min(real_end_dt                  ) as real_end_dt
+        , max(is_new                       ) as is_new
+        , max(is_return                    ) as is_return
+        , max(is_migration                 ) as is_migration
+        , max(is_renew                     ) as is_renew
+        , max(is_renew_auto                ) as is_renew_auto
+        , max(is_end_renew_auto            ) as is_end_renew_auto
+        , max(is_end_renew_manual          ) as is_end_renew_manual
+        , max(is_expire                    ) as is_expire
+        , max(is_terminate                 ) as is_terminate
+        , max(is_refund                    ) as is_refund
+        , max(is_end_change_type           ) as is_end_change_type
+        , max(is_start_change_type         ) as is_start_change_type
+        , max(is_end_migration             ) as is_end_migration    
+        , max(is_deactivate                ) as is_deactivate     
+        , max(is_end_change_failed         ) as is_end_change_failed                
+        from base
+        group by key_date, subscribe_id, account_id
+        , subscribe_type, market_type, subscr_type_dtl, subscr_term_key
+        , subscribe_start_at, start_dt, original_start_dt, original_exp_dt, original_end_dt, final_renew_target_dt
+        , product_id, store_item_id, service_product_code
+        , is_last_term, last_status 
+        ) as x     
+order by subscr_term_key
+) as a
+"""""")    
+
+daily.createOrReplaceTempView('daily')
+#daily.display()"
+13,md,,just_heading,##### 구독 예약 데이터 생성 (reserv)
+14,py,,code,"reserv = spark.sql(f""""""
+select 
+distinct service_product_code, x.account_id
+, last_value(reserv_status)over(partition by x.service_product_code, x.account_id order by x.created_at ROWS BETWEEN UNBOUNDED PRECEDING and UNBOUNDED FOLLOWING)  as last_reserve_status
+, last_value(created_at)over(partition by x.service_product_code, x.account_id order by x.created_at ROWS BETWEEN UNBOUNDED PRECEDING and UNBOUNDED FOLLOWING)  as last_reserve_status_dt
+from
+(
+select 
+service_product_code
+, account_id
+, case when service_product_code rlike 'period' then 'PERIOD' else 'REGULAR' end as subscr_type
+, market_type 
+, created_at
+, case when ( service_product_code rlike 'period'  and event_type = 'CROSS_GRADE'  and status  = 'REGISTER' and reason rlike '추가 구매')  then 'RESERVE'
+       when  ( service_product_code rlike 'period'  and event_type = 'CROSS_GRADE' and status  = 'CANCEL'   and reason rlike '사용자 취소')  then 'CANCEL_RESERVE'
+       when ( service_product_code rlike 'regular'  and event_type = 'UNSUBSCRIBE' and status  = 'REGISTER' and reason rlike '취소 예약')   then 'UNSUBSCRIBE'
+       when ( service_product_code rlike 'regular'  and event_type = 'UNSUBSCRIBE' and status  = 'CANCEL'   and reason rlike '재개 신청')   then 'RESUME'
+       end as reserv_status
+from wev_prod.subscribe.reservation_history
+where 1=1
+and service_code = 'WDM'
+and date(created_at) >= date('{key}') - interval '40' days 
+and date(created_at) <= date('{key}')
+--and service_product_code not rlike 'period' 
+and (
+  -- # 기간권 
+  ( service_product_code rlike 'period'  and event_type = 'CROSS_GRADE'    and status  = 'REGISTER' and reason rlike '추가 구매')   -- # 기간권 추가 구매 예약
+  or ( service_product_code rlike 'period'  and event_type = 'CROSS_GRADE' and status  = 'CANCEL'   and reason rlike '사용자 취소') -- # 기간권 구매 취소 
+  -- # 정기권 
+  or ( service_product_code rlike 'regular'  and event_type = 'UNSUBSCRIBE' and status  = 'REGISTER' and reason rlike '취소 예약')   -- # 정기권 취소 예약 
+  or ( service_product_code rlike 'regular'  and event_type = 'UNSUBSCRIBE' and status  = 'CANCEL'   and reason rlike '재개 신청')   -- # 정기권 재개 
+)
+) as x
+"""""")
+
+reserv.createOrReplaceTempView('reserv')
+"
+15,md,,just_heading,##### 구독 기본 데이터 생성 (subscr)
+16,py,,code,"subscr = spark.sql(f""""""
+select 
+ss.key_date, ss.subscribe_id
+, aa.we_art_id
+, aa.we_art_name 
+, cd.user_id as dm_id
+, get_json_object(get_json_object(cd.official_name, '$.values' ), '$.en') as dm_name
+, ss.account_id, ss.subscr_type_dtl, ss.subscr_term_key, ss.is_last_term
+, ss.start_type, ss.end_type
+, case
+    when ss.subscribe_type = 'PERIOD_PASS' and ss.end_type in ('SUBSCRIBE') then nvl(rr.last_reserve_status, 'NO_RESERVE')
+    when ss.subscribe_type = 'REGULAR_PASS' and ss.end_type in ('SUBSCRIBE') then nvl(rr.last_reserve_status, 'SUBSCRIBE')
+    end as reserve_type
+, date_diff(ss.key_date, date(ss.new_dt)) as subscr_days
+, ss.new_dt, ss.start_dt, ss.original_start_dt, ss.original_exp_dt, ss.original_end_dt, ss.real_end_dt, ss.final_renew_target_dt  
+, ss.subscribe_type, ss.market_type
+, rr.last_reserve_status_dt 
+-- # 변경 전/후 구독권 정보 
+, case when ss.start_type in ('CHANGE', 'RENEW_CHANGE') then lag(ss.subscr_type_dtl)over(partition by ss.subscribe_id order by ss.subscr_term_key)  end as change_from
+, case when ss.end_type in ('CHANGE', 'RENEW_CHANGE')   then lead(ss.subscr_type_dtl)over(partition by ss.subscribe_id order by ss.subscr_term_key)  end as change_to
+-- # 기타 구독자 정보 
+, ds.subscription_id
+, cc.ctry_code
+, case when cm.we_member_id is not null then 1 else 0 end as is_comm_user
+, case when fc.we_member_id is not null then 1 else 0 end as is_fc
+-- # 기타 상품 정보 
+, cd.product_id, ss.store_item_id
+, string(ss.key_date) as part_date
+, now() + interval '9' hour as run_timestamp
+from 
+-- ## ss : 구독 데잍 정리 
+(
+select * from daily
+where not ( is_last_term = 0 and end_type is null) -- # 이상 로그 제거 
+) as ss 
+-- ## rr : 구독 예약/추소 정보 
+LEFT JOIN reserv as rr
+    ON ss.service_product_code = rr.service_product_code
+        and ss.account_id = rr.account_id 
+        and rr.last_reserve_status_dt between ss.start_dt and nvl(ss.real_end_dt, ss.original_exp_dt) 
+-- # uu : wv_user_id 
+LEFT JOIN 
+wev_prod.we_mart.we_user as uu 
+    ON ss.account_id = uu.we_member_id and uu.part_date ='{key}'  
+-- # cd : 채팅방 정보 
+LEFT JOIN
+wev_prod.weverse2.wdm_common_dm as cd
+    ON concat('d',ss.product_id) = cd.product_id
+-- # ds : 개별 dm 구독 정보      
+LEFT JOIN
+wev_prod.weverse2.wdm_subscription as ds
+    ON ds.user_id = uu.wv_user_id and ds.dm_id = cd.user_id
+-- # aa : 아티스트 정보 
+LEFT JOIN 
+wev_prod.we_mart.we_artist as aa
+    ON cd.community_id = aa.comm_id
+-- # cc : 국가
+LEFT JOIN 
+(
+select
+distinct member_id, last_value(country)over(partition by member_id order by created_at rows between unbounded preceding and unbounded following) as ctry_code  
+from wev_prod.we_mart.wv_user_ctry_history
+where part_date <= '{key}'      
+) as cc 
+    ON ss.account_id = cc.member_id
+-- # cm : 커뮤니티 유저 정보 
+LEFT JOIN
+(
+select distinct key_date, comm_id, we_member_id from wev_prod.we_mart.wv_comm_user
+where part_date = '{key}'
+) as cm
+    ON cd.community_id = cm.comm_id and ss.account_id = cm.we_member_id 
+-- # fc : 멤버십 정보 
+LEFT JOIN 
+(
+select distinct we_art_id, we_member_id from wev_prod.we_mart.ws_fc_user_history
+where part_date = '{key}'
+) as fc 
+    ON aa.we_art_id = fc.we_art_id and ss.account_id = fc.we_member_id 
+""""""
+) 
+
+subscr.createOrReplaceTempView('subscr')
+#display(subscr)
+"
+17,md,,just_heading,#### RUN
+18,py,,code,"# RUN MAIN QUERY
+dflow = Dataflow(run_mode=run_mode, notifier=noti)
+dflow.run(dataframe = subscr , table_info=table, option=option, buckets=['databricks'])
+print(option)"
+19,md,,just_heading,#### 예외케이스 (we_meta.wv_dm_subscr_exc)
+20,py,,code,"# 5/30 일 시작일 이슈
+""""""
+%sql
+-- # 5/30 일 시작일 이슈
+insert into wev_prod.we_meta.wv_dm_subscr_exc
+    select 
+    distinct subscribe_id
+    , 'START_AT' as issue_type
+    , start_at
+    , min(case
+        when date(start_at) = '2024-05-30' then start_at + interval '1' day
+        when date(start_at) = '2024-06-01' then start_at - interval '1' day
+        end) as mod_start_at
+    , null as subscribe_start_at 
+    , null as mod_subscribe_start_at
+    , '24/05/30 시작일 오류' as issue_reason
+    , now() + interval '9' hour as run_timestamp
+    from wev_prod.subscribe.subscribe_history 
+    where status = 'SUBSCRIBING'  
+    and market_type in ('PLAYSTORE', 'APPSTORE')  
+    and date(start_at) in ('2024-05-30', '2024-06-01')
+    and date(created_at) = '2024-05-31'    
+    group by subscribe_id, start_at
+    UNION ALL 
+    select 
+    distinct subscribe_id
+    , 'SUBSCR_START_AT' as issue_type
+    , null as start_at
+    , null as mod_start_at 
+    , subscribe_start_at 
+    , min(case
+        when date(start_at) = '2024-05-30' then start_at + interval '1' day
+        when date(start_at) = '2024-06-01' then start_at - interval '1' day
+        end) as mod_subscribe_start_at
+    , '24/05/30 시작일 오류' as issue_reason
+    , now() + interval '9' hour as run_timestamp
+    from wev_prod.subscribe.subscribe_history 
+    where status = 'SUBSCRIBING'  
+    and market_type in ('PLAYSTORE', 'APPSTORE')  
+    and date(start_at) in ('2024-05-30', '2024-06-01')
+    and date(created_at) = '2024-05-31'    
+    group by subscribe_id, subscribe_start_at 
+"""""""
+21,py,,code,"# 2024/07 PLAYSTORE start_at 오산정 이슈
+""""""
+%sql
+insert into wev_prod.we_meta.wv_dm_subscr_exc
+select distinct subscribe_id
+, 'START_AT' as issue_type
+, start_at
+, created_at as mod_start_at 
+, null as subscribe_start_at
+, null as mod_subscribe_start_at
+, '2024/07 PLAYSTORE start_at 오산정 이슈' as issue_reason
+, now() + interval '9' hour as run_timestamp
+from wev_prod.subscribe.subscribe_history 
+where status = 'SUBSCRIBING'  
+and event_type in ('RENEWAL_SUBSCRIPTION', 'START_FIRST_SUBSCRIPTION')
+and market_type = 'PLAYSTORE'
+--and datediff(next_payment_at, start_at) between 32 and 44
+and datediff(next_payment_at, start_at) > 55
+and date(created_at) >=  '2024-06-29'
+and date(created_at) <= '2024-07-03'
+UNION ALL 
+select 
+distinct subscribe_id
+, 'SUBSCR_START_AT' as issue_type
+, null as start_at
+, null as mod_start_at 
+, subscribe_start_at 
+, created_at as mod_subscribe_start_at 
+, '2024/07 PLAYSTORE start_at 오산정 이슈' as issue_reason
+, now() + interval '9' hour as run_timestamp
+from wev_prod.subscribe.subscribe_history 
+where status = 'SUBSCRIBING'  
+and event_type in ('START_FIRST_SUBSCRIPTION')
+and market_type = 'PLAYSTORE'
+and datediff(next_payment_at, start_at) > 55
+and date(created_at) >= '2024-06-29'
+and date(created_at) <= '2024-07-03'
+"""""""
+22,md,,just_heading,#### Appendix
+23,md ,,etc, ##### create table
+24,py,,code,"""""""
+%sql
+create or replace table wev_prod.we_mart.wv_dm_subscr_daily (
+key_date	date	comment ""기준일자""
+, subscribe_id	bigint	comment ""subscribe 쪽 구독 id""
+, we_art_id	int	comment ""아티스트id""
+, we_art_name	string	comment ""아티스트명""
+, dm_id	bigint	comment ""dm_id""
+, dm_name	string	comment ""DM명(EN)""
+, account_id	string	comment ""account_id""
+, subscr_type_dtl	string	comment ""구독 상세 유형""
+, subscr_term_key	string	comment ""구독 주기 key ""
+, is_last_term	int	comment ""마지막 주기 여부""
+, start_type	string	comment ""시작 유형""
+, end_type	string	comment ""종료 유형""
+, reserve_type	string	comment ""예약 유형""
+, subscr_days	int	comment ""구독 일수""
+, new_dt	timestamp	comment ""구독 최초 시작 일시(KST)""
+, start_dt	timestamp	comment ""구독 주기 시작 일시(KST)""
+, original_start_dt	timestamp	comment ""subscribe 상 발생한 시작일시(KST)""
+, original_exp_dt	timestamp	comment ""구독 주기 최초 만료일시(KST)""
+, original_end_dt	timestamp	comment ""구독 주기 최초 종료일시(KST)""
+, real_end_dt	timestamp	comment ""실제 종료일시(KST)""
+, final_renew_target_dt	timestamp	comment ""갱신 대상 일시(KST)""
+, last_reserve_status_dt	timestamp	comment ""예약 상태 변경일(KST)""
+, change_from	string	comment ""변경 시작 이전 구독권(from)""
+, change_to	string	comment   ""변경 종료 이후 구독권(to)""
+, subscribe_type	string	comment ""구독권 유형""
+, market_type	string	comment ""마켓 유형""
+, subscription_id	bigint	comment ""wdm 쪽 구독id""
+, ctry_code	string	comment ""국가 코드""
+, is_comm_user	int	comment ""커뮤니티 가입여부""
+, is_fc	int	comment ""멤버십 가입여부""
+, product_id	string	comment ""상품id(concat'd')""
+, store_item_id	string	comment ""store_item_id""
+, part_date	string	comment ""파티션일자(로그발생일 기준)""
+, run_timestamp	timestamp	comment ""배치일시(UTC)""
+)
+partitioned by (part_date)
+comment ""WDM 구독 일간 이력""
+""""""
+"

@@ -1,0 +1,480 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.wv_comm_
+2,md,,basic_info,"#### Basic Info
+* 일간 커뮤니티 회원 정보
+* Mart Primary 
+* DAILY APPEND
+* WIKI : [LINK](https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/2868674694/we+mart.wv+comm+user)
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2024-07-18|데이터분석팀 윤상혁|member_profile 유실 방어로직|
+|2024-07-03|송재영|we_user_compact => we_user로 변경|
+|2024-06-24|데이터분석팀 윤상혁|member_status_log 유실 방어로직|
+|2024-03-20|데이터분석팀 윤상혁|멤버십 국가샵 중복가입 대응|
+|2023-10-16|데이터분석팀 윤상혁|we_user -> we_user_compact로 변경|
+|2023-03-10 |윤상혁|z-ordering 추가|
+|2022-10-04 |윤상혁|국가마트 변경|
+|2022-07-18 |윤상혁|WV2 대응|
+|2021-11-29 |박상민|마트생성/배치생성|
+|2021-12-01 |박상민|FC관련로직 수정|
+|2021-12-16 |박상민|wv_user_status 추가 |
+|2022-04-28 |박상민|tot_comm_user_first_dt, is_first_user_comm 추가|
+
+###### Source Tables
+* weverse.community_user
+* weverse.user
+* weverse.community_user_setting
+* we_mart.wv_user_ctry_history
+* we_mart.we_artist
+* we_mart.ws_fc_user_history 
+* we_mart.we_user"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"from datetime import datetime, timedelta
+
+key = dbutils.widgets.get(""target_date"")
+bef_key = (datetime.strptime(key, ""%Y-%m-%d"") - timedelta(days = 2)).strftime('%Y-%m-%d')
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'wv_comm_user', 
+  'service' : None, #default (None)
+  'partition' : ['part_comm_id', 'part_date']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'overwrite', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : False, #default (True)
+  'delete' : True, #default (False)
+  'delete_key' : 'part_date' #default (None)
+}"
+6,md ,,etc, #### Main Query
+7,md ,,etc," ##### 전체쿼리 
+ 필요에 따라 단계 구분시 사용"
+8,py,,code,"query = f""""""
+SELECT
+key_date
+, CM2.wv_user_id
+, CM2.we_member_id
+, cast(CM2.comm_id as bigint) as comm_id
+, CM2.we_art_id
+, we_art_name
+, case when fc_id is not null then 1 else 0 end is_fc
+, fc_id
+, art_indi_id
+, art_indi_type
+, art_indi_name
+, ip_ctry
+, wv_user_status
+, case when WV1.comm_user_first_dt is not null then WV1.comm_user_first_dt else CM2.comm_user_first_dt end as comm_user_first_dt
+, case when WV1.tot_comm_user_first_dt is not null then WV1.tot_comm_user_first_dt else CM2.tot_comm_user_first_dt end as tot_comm_user_first_dt
+, case when WV1.is_first_user_comm is not null then WV1.is_first_user_comm
+       when CM2.comm_user_first_dt = CM2.tot_comm_user_first_dt then 1 else 0 
+       end is_first_user_comm
+, comm_user_status
+, comm_user_grade
+, comm_user_cre_dt
+, comm_user_end_dt
+, cast(is_profile_created as bigint) as is_profile_created
+, profile_name
+, cast(is_profile_private as bigint) as is_profile_private
+, is_upload_profile_img
+, is_upload_profile_background_img
+, cast(is_official as bigint) as is_official
+, comm_user_id
+, cast(cnt_comm_user_id as bigint) as cnt_comm_user_id
+, cast(sum_report_count as bigint) as sum_report_count
+, comm_user_seq
+, 'ALL' as notification_type -- 기준 현행화 필요
+, like_on_comment_alarm
+, hot_post_alarm
+, new_fc_alarm
+, new_media_alarm
+, new_community_notice_alarm
+, artist_to_fans_post_alarm
+, artist_post_alarm
+, artist_like_on_my_post_alarm
+, artist_comment_on_my_post_alarm
+, like_on_my_post_alarm
+, comment_on_my_post_alarm
+, after_receiving_artist_comment_alarm
+, artist_cheering_me_push_enabled		
+, artist_comment_push_enabled		
+, artist_live_on_air_push_enabled		
+, artist_live_reservation_push_enabled		
+, artist_moment_push_enabled		
+, artist_post_push_enabled		
+, comment_push_enabled		
+, community_anniversary_push_enabled		
+, community_media_push_enabled		
+, community_notice_push_enabled		
+, following_push_enabled	
+, v_ch_join_dt
+, is_v_user
+, cast(CM2.comm_id as bigint) as part_comm_id
+, string(key_date) as part_date
+, current_timestamp + interval '9' hour as run_timestamp
+FROM
+	(
+      select distinct 
+            date('{key}') 									as key_date
+          , CM1.wv_user_id
+          , UU.we_member_id 
+          , UU.wv_status as wv_user_status
+          , CM1.comm_id
+          , ART.we_art_id
+          , ART.we_art_name
+          , ART.fc_artist_code
+          , FC.fc_id as fc_id
+          , art_indi_id
+          , art_indi_type
+          , art_indi_name
+          , comm_user_first_dt
+          , tot_comm_user_first_dt
+          , CTRY.ip_ctry as ip_ctry
+          , case when date(UU.wv_leave_dt) = date('{key}') then 'WV_DEACTIVATED' else CM1.status end as comm_user_status
+          , grade 									as comm_user_grade
+          , user_cre_dt							as comm_user_cre_dt
+          , nvl(user_end_dt, UU.wv_leave_dt)								as comm_user_end_dt
+          , is_profile_created 						as is_profile_created
+          , profile_name
+          , is_profile_private					as is_profile_private
+          , is_upload_profile_img					as is_upload_profile_img
+          , is_upload_profile_background_img			as is_upload_profile_background_img
+          , is_official							as is_official
+          , comm_user_id 	   		as comm_user_id
+          , 1 	    	   	 	as cnt_comm_user_id
+          , report_count								as sum_report_count 
+          , comm_user_seq							as comm_user_seq
+          , null                    	as notification_type -- 커뮤니티 알람 설정
+          , null	                     	as like_on_comment_alarm
+          , null	                     	as hot_post_alarm 
+          , null	                         	as new_fc_alarm
+          , null	                     	as new_media_alarm
+          , null	         	as new_community_notice_alarm
+          , null	           	as artist_to_fans_post_alarm
+          , null	                   	as artist_post_alarm
+          , null	         	as artist_like_on_my_post_alarm
+          , null	     	as artist_comment_on_my_post_alarm
+          , null               	as like_on_my_post_alarm
+          , null	             	as comment_on_my_post_alarm
+          , null	 	as after_receiving_artist_comment_alarm
+          , cast(case when artist_cheering_me_push_enabled		= 'true' then 1 else 0 end as tinyint) as  artist_cheering_me_push_enabled
+          , cast(case when artist_comment_push_enabled		= 'true' then 1 else 0 end as tinyint) as  artist_comment_push_enabled
+          , cast(case when artist_live_on_air_push_enabled		= 'true' then 1 else 0 end as tinyint) as  artist_live_on_air_push_enabled
+          , cast(case when artist_live_reservation_push_enabled		= 'true' then 1 else 0 end as tinyint) as  artist_live_reservation_push_enabled
+          , cast(case when artist_moment_push_enabled		= 'true' then 1 else 0 end as tinyint) as  artist_moment_push_enabled
+          , cast(case when artist_post_push_enabled		= 'true' then 1 else 0 end as tinyint) as  artist_post_push_enabled
+          , cast(case when comment_push_enabled		= 'true' then 1 else 0 end as tinyint) as  comment_push_enabled
+          , cast(case when community_anniversary_push_enabled		= 'true' then 1 else 0 end as tinyint) as  community_anniversary_push_enabled
+          , cast(case when community_media_push_enabled		= 'true' then 1 else 0 end as tinyint) as  community_media_push_enabled
+          , cast(case when community_notice_push_enabled		= 'true' then 1 else 0 end as tinyint) as  community_notice_push_enabled
+          , cast(case when following_push_enabled	= 'true' then 1 else 0 end as tinyint) as  following_push_enabled
+          , CM1.v_ch_join_dt
+          , nvl2(UU.vlive_id, 1, 0) as is_v_user
+      from 
+        --	CM1 : 커뮤니티 기본정리
+          (
+            select *
+            from 
+            (
+              select a.comm_user_id 
+                   , a.comm_id
+                   , a.wv_user_id
+                   , case when ART_INDI.special_member_type is not null then ART_INDI.art_indi_member_id end as art_indi_id
+                   , ART_INDI.special_member_type as art_indi_type
+                   , ART_INDI.art_indi_name
+                   , nvl2(b.status, b.status, 'NORMAL') as status
+                   , case when ART_INDI.special_member_type is null then 'FAN' else ART_INDI.special_member_type end as grade
+                   , a.is_profile_created 
+                   , a.profile_name
+                   , a.is_profile_private
+                   , a.is_upload_profile_img
+                   , a.is_upload_profile_background_img
+                   , case when ART_INDI.special_member_type is null then 0 else 1 end as is_official
+                   , nvl(REPORT.report_count,0) as report_count
+                   , a.user_cre_dt
+                   , case when b.status = 'DEACTIVATED' then to_timestamp(b.log_dt) end as user_end_dt
+                   , b.comm_user_seq
+                   , a.comm_user_first_dt
+                   , to_timestamp(min(comm_user_first_dt)over(partition by a.wv_user_id)) as tot_comm_user_first_dt
+                   , a.v_ch_join_dt
+              from
+              (
+                  select concat(CM.community_id,'-',CM.user_id) as comm_user_id 
+                       , CM.community_id as comm_id
+                       , CM.user_id as wv_user_id
+                       , 1 as is_profile_created 
+                       , CM.profile_name
+                       , timestamp(CM.data:lastJoinAt/1000+32400) as user_cre_dt
+                       , timestamp(nvl2(MIG.w_user_id, get_json_object(CM.data, '$.firstJoinAt'), null)/1000 + 32400) as v_ch_join_dt
+                       , timestamp(nvl2(MIG.w_user_id, MIG.created_at, get_json_object(CM.data, '$.firstJoinAt'))/1000 + 32400) as comm_user_first_dt 
+                       , case when get_json_object(CM.data, '$.hidden') = 'true' then 1 else 0 end as is_profile_private
+                   , case when get_json_object(CM.data, '$.profileImageUrl') is not null then 1 else 0 end as is_upload_profile_img
+                   , case when get_json_object(CM.data, '$.profileCoverImageUrl') is not null then 1 else 0 end as is_upload_profile_background_img
+                  from
+                  (
+                    select community_id, user_id, profile_name, data
+                    from wev_prod.we_mart.ods_wv_member_profile
+                    where part_date between '{bef_key}' and '{key}'  -- 00시 서비스 탈퇴 대비 2일치 데이터 수집
+                    QUALIFY row_number()over(PARTITION BY community_id, user_id order by part_date desc) = 1
+                  ) as CM
+                  left join 
+                  (
+                      select MIG_USR.w_user_id
+                           , VW_META.wv_comm_id
+                           , min(MIG_USR.created_at) as created_at -- WEVERSE ZONE은 V채널 2개에서 이관
+                      from
+                      (
+                        select w_user_id
+                             , v_channel
+                             , min(created_at) as created_at -- 여러번 이관한 유저 발견하여 마지막만 계산 (wv_user_id = 14077861)
+                        from
+                        (
+                          select key as w_user_id
+                               , created_at
+                               , explode(split(regexp_replace(get_json_object(data, '$.vChannels'), r'\\]|\\[', ''), ',')) as v_channel
+                          from wev_prod.weverse2.community_log_v_member_migration
+                          where type = 'MEMBER'
+                            and date(timestamp(created_at/1000+32400)) >= '2022-11-02' --(*11/01일자 이관 오류 발생)
+                            and date(timestamp(created_at/1000+32400)) <= '{key}'
+                        )
+                        group by 1,2
+                      ) as MIG_USR
+                      left join wev_prod.we_meta.v_to_wv_comm_mapping VW_META 
+                        on VW_META.v_comm_id = MIG_USR.v_channel
+                      group by 1,2
+                  ) MIG on MIG.w_user_id = CM.user_id and MIG.wv_comm_id = CM.community_id
+              ) a
+              left join 
+              (
+                  select log_id, community_id, user_id, type
+                       , case when type != 'unsubscribe' then 'NORMAL' else 'DEACTIVATED' end as status
+                       , from_unixtime(change_at/1000 + 32400) as log_dt
+                       , case when type = 'unsubscribe' then lag(from_unixtime(change_at/1000 + 32400))over(partition by community_id, user_id order by log_id) end as user_cre_dt
+                       , row_number()over(partition by community_id, user_id, type order by log_id) as comm_user_seq
+                       , row_number()over(partition by community_id, user_id order by log_id desc) as seq
+                  from wev_prod.weverse2.community_log_member_status_log
+                  where type in ('subscribe', 'unsubscribe')
+                    and date(from_unixtime(change_at/1000 + 32400)) <= date('{key}')
+              ) b on b.community_id = a.comm_id and b.user_id = a.wv_user_id and b.seq = 1
+              left join
+              (
+                select concat(a.community_id,'-',a.user_id) as art_indi_member_id
+                       , a.user_id as art_user_id
+                       , a.community_id as comm_id
+                       , a.special_member_type
+                       , case when coalesce(get_json_object(a.data, '$.officialName.values.ko'), get_json_object(a.data, '$.officialName.values.en'), get_json_object(a.data, '$.officialName.values.jp')) is null then coalesce(get_json_object(b.data, '$.officialName.values.ko'), get_json_object(b.data, '$.officialName.values.en'), get_json_object(b.data, '$.officialName.values.jp')) else coalesce(get_json_object(a.data, '$.officialName.values.ko'), get_json_object(a.data, '$.officialName.values.en'), get_json_object(a.data, '$.officialName.values.jp')) end as art_indi_name
+                       -- ko 가 없는 경우가 있구나
+                  from wev_prod.weverse2.community_member_special_member a
+                  left join wev_prod.weverse2.community_member_special_member b on b.user_id = a.user_id and b.special_member_type = 'ARTIST'
+                  where a.special_member_type in ('ARTIST', 'OTHER_COMMUNITY_ARTIST')
+              ) ART_INDI on ART_INDI.comm_id = a.comm_id and ART_INDI.art_user_id = a.wv_user_id
+              left join
+              (
+                select regexp_extract(author_id,'[A-Z]-([0-9]*-[0-9]*)', 1) as target_member_id
+                       , get_json_object(value, '$.cumulativeReportCount') as report_count
+                  from wev_prod.weverse2.community_common_report
+                  where report_type = 'MEMBER'
+              ) REPORT on REPORT.target_member_id = a.comm_user_id
+            )
+            where date('{key}') between date(user_cre_dt) and date(nvl(user_end_dt, date('{key}')))
+          ) as CM1
+  -- UU : 회원정보 
+          LEFT JOIN wev_prod.we_mart.we_user as UU ON CM1.wv_user_id = UU.wv_user_id and UU.part_date = '{key}'
+  -- ST : 커뮤니티 셋팅 정보 
+          LEFT JOIN
+          wev_prod.weverse2.notification_push_config as ST
+          ON CM1.comm_id = ST.community_id and CM1.wv_user_id = ST.user_id
+	-- CTRY : 국가정보 
+        LEFT JOIN 
+        (
+          select distinct
+          user_id
+          , country as ip_ctry
+          , date(created_at + interval 9 hour) as ctry_start_date
+          , date(nvl(lead(created_at + interval 9 hour) over (partition by user_id order by created_at), '2099-12-31 23:59:59')) as ctry_end_date 
+          , row_number()over(partition by user_id order by created_at desc) as seq
+          from wev_prod.we_mart.wv_user_ctry_history
+          where part_date <= '{key}'
+          order by ctry_start_date
+          ) AS CTRY
+          ON CM1.wv_user_id= CTRY.user_id  and date('{key}') between CTRY.ctry_start_date and CTRY.ctry_end_date and CTRY.seq = 1
+  -- ART : 아티스트 정보 
+          LEFT JOIN 
+          wev_prod.we_mart.we_artist as ART
+          ON ART.comm_id = CM1.comm_id
+   -- FC : 멤버쉽 정보 
+          LEFT JOIN 
+          (
+            select 
+            distinct we_member_id
+                , we_art_id
+                , comm_id
+                , last(fc_id)over(partition by we_member_id, we_art_id order by create_dt ROWS BETWEEN UNBOUNDED PRECEDING  AND UNBOUNDED FOLLOWING) as fc_id
+            from we_mart.ws_fc_user_history 
+            where part_date = '{key}' 
+            and ord_status not in ('PAYMENT_FAILED')
+            and is_cx_by_restore = 0        
+           ) as FC
+          ON FC.we_member_id = UU.we_member_id and FC.comm_id = ART.comm_id  
+          WHERE date('{key}') <= date(nvl(UU.wv_leave_dt, date('{key}')))
+) AS CM2
+LEFT JOIN wev_prod.we_mart.wv1_join_info WV1 on WV1.wv_user_id = CM2.wv_user_id and WV1.we_art_id = CM2.we_art_id
+"""""""
+9,md,,just_heading,#### Run
+10,py,,code,"dflow = Dataflow(run_mode=run_mode, notifier=noti)
+dflow.run(dataframe=spark.sql(query), table_info=table, option=option, buckets=['databricks'])"
+11,py,,code,"spark.sql(f'''
+OPTIMIZE wev_prod.we_mart.wv_comm_user
+where part_date = '{key}'
+ZORDER BY (wv_user_id, we_art_id, comm_user_first_dt)
+''')"
+12,md,,just_heading,#### Appendix
+13,md,,just_heading,##### create query
+14,py,,code,"q = """"""
+create table we_mart.wv_comm_user
+(
+ key_date								date			comment ""key_date""
+,wv_user_id								bigint			comment ""wv_user_id""
+,we_member_id							bigint			comment ""we_member_id""
+,comm_id									bigint			comment ""community_id""
+,we_art_id								int				comment ""we 아티스트 id""
+,we_art_name								string			comment ""we 아티스트 name""
+,is_fc									int				comment ""멤버쉽 여부""
+,fc_id									bigint			comment ""멤버쉽 id""
+,art_indi_id								string			comment ""아티스트 멤버 id""
+,art_indi_type								string			comment ""아티스트 타입""
+,art_indi_name								string			comment ""아티스트 멤버 명""
+,ip_ctry									string			comment ""사용자 최근 접속 국가""
+,wv_user_status							string			comment ""위버싀 회원 상태""
+,comm_user_first_dt						timestamp		comment ""커뮤니티 최초 가입 일시""
+,tot_comm_user_first_dt					timestamp		comment ""커뮤니티 첫 가입일자""
+,is_first_user_comm						int				comment ""커뮤니티 첫 가입여부""
+,comm_user_status						string			comment ""커뮤니티 회원 상태""
+,comm_user_grade							string			comment ""커뮤니티 회원 구분""
+,comm_user_cre_dt						timestamp		comment ""현재 커뮤니티 회원 생성 일시""
+,comm_user_end_dt						timestamp		comment ""현재 커뮤니티 회원 종료 일시""
+,is_profile_created						bigint			comment ""프로필 생성여부""
+,profile_name                          string          comment ""프로필 닉네임""
+,is_profile_private						bigint			comment ""프로필 비공개여부""
+,is_upload_profile_img					int				comment ""프로필 이미지 업로드 여부""
+,is_upload_profile_background_img		int				comment ""프로필 백그라운드 이미지 업로드 여부""
+,is_official								bigint			comment ""공식 계정여부""
+,comm_user_id							string	comment ""comm_user_id""
+,cnt_comm_user_id						bigint			comment ""가입 comm_user_id 수""
+,sum_report_count						bigint			comment ""신고 여부""
+,comm_user_seq							int				comment ""커뮤니티 회원 시퀀스""
+,notification_type						string			comment ""알림 수신 설정 타입 (WV1)""
+,like_on_comment_alarm					tinyint			comment ""내 댓글에 느낌이 달렸을 때 알람 (WV1)""
+,hot_post_alarm							tinyint			comment ""내 글이 핫포스트에 노출시 알람 (WV1)""
+,new_fc_alarm							tinyint			comment ""새로운 fc only 알람 (WV1)""
+,new_media_alarm							tinyint		comment ""새로운 미디어 알람 (WV1)""
+,new_community_notice_alarm				tinyint			comment ""커뮤니티 공지 알람 (WV1)""
+,artist_to_fans_post_alarm				tinyint			comment ""아티스트 새로운 투팬즈 포스트 알람 (WV1)""
+,artist_post_alarm						tinyint			comment ""아티스트 새로운 포스트 알람 (WV1)""
+,artist_like_on_my_post_alarm			tinyint			comment ""내가 작성한 포스트 > 아티스트 느낌 알람 (WV1)""
+,artist_comment_on_my_post_alarm			tinyint	    comment ""내가 작성한 포스트 > 아티스트 댓글 알람 (WV1)""
+,like_on_my_post_alarm					tinyint			comment ""내가 작성한 포스트 > 느낌 알람 (WV1)""
+,comment_on_my_post_alarm				tinyint			comment ""내가 작성한 포스트 > 댓글 알람 (WV1)""
+,after_receiving_artist_comment_alarm	tinyint			comment ""아티스트 댓글 받은 이후 알림 받기 (WV1)""
+,artist_cheering_me_push_enabled		tinyint			comment ""아티스트 활동 알림 > 나를 응원하기 알림 (WV2)""
+,artist_comment_push_enabled			tinyint			comment ""아티스트 활동 알림 > 나를 댓글 알림 (WV2)""
+,artist_live_on_air_push_enabled		tinyint			comment ""아티스트 활동 알림 > 라이브 시작 (WV2)""
+,artist_live_reservation_push_enabled	tinyint			comment ""아티스트 활동 알림 > 라이브 예약 (WV2)""
+,artist_moment_push_enabled				tinyint			comment ""아티스트 활동 알림 > 모먼트 작성 (WV2)""
+,artist_post_push_enabled				tinyint			comment ""아티스트 활동 알림 > 포스트 작성 (WV2)""
+,comment_push_enabled					tinyint			comment ""내 활동 > 댓글 알림 (WV2)""
+,community_anniversary_push_enabled		tinyint			comment ""커뮤니티 알림 > 기념일 알림 (WV2)""
+,community_media_push_enabled			tinyint			comment ""아티스트 알림 > 미디어 등록 (WV2)""
+,community_notice_push_enabled			tinyint			comment ""커뮤니티 알림 > 공지사항 등록 (WV2)""
+,following_push_enabled					tinyint			comment ""내 활동 알림 > 나를 팔로우 (WV2)""
+,v_ch_join_dt                           timestamp       comment ""V채널 가입 시점""
+, is_v_user                             int             comment ""V이관 유무""
+,part_comm_id							bigint			comment ""partition_community_id""
+,part_date								string			comment ""partition_date""
+,run_timestamp							timestamp		comment ""run_timestamp""
+)
+partitioned by (part_comm_id, part_date)
+comment ""위버스 커뮤니티 회원 이력""
+""""""
+#spark.sql(q)"
+15,md,,just_heading,##### WV1 마이그레이션
+16,py,,code,"q = """"""
+select key_date								
+, wv_user_id								
+, we_member_id							
+, comm_id								
+, we_art_id								
+, we_art_name							
+, is_fc									
+, fc_id									
+, case when art_indi_id is not null then concat(comm_id,'-',wv_user_id) end as art_indi_id
+, string(null) as art_indi_type							
+, string(null) as art_indi_name							
+, ip_ctry								
+, wv_user_status							
+, comm_user_first_dt						
+, tot_comm_user_first_dt					
+, is_first_user_comm						
+, comm_user_status						
+, comm_user_grade						
+, comm_user_cre_dt						
+, comm_user_end_dt						
+, is_profile_created						
+, string(null) as profile_name                          
+, is_profile_private						
+, is_upload_profile_img					
+, is_upload_profile_background_img		
+, is_official							
+, concat(comm_id,'-',wv_user_id) as comm_user_id
+, cnt_comm_user_id						
+, sum_report_count						
+, comm_user_seq							
+, notification_type						
+, like_on_comment_alarm					
+, hot_post_alarm							
+, new_fc_alarm							
+, new_media_alarm						
+, new_community_notice_alarm				
+, artist_to_fans_post_alarm				
+, artist_post_alarm						
+, artist_like_on_my_post_alarm			
+, artist_comment_on_my_post_alarm		
+, like_on_my_post_alarm					
+, comment_on_my_post_alarm				
+, after_receiving_artist_comment_alarm	
+, tinyint(null) as artist_cheering_me_push_enabled		
+, tinyint(null) as artist_comment_push_enabled			
+, tinyint(null) as artist_live_on_air_push_enabled		
+, tinyint(null) as artist_live_reservation_push_enabled	
+, tinyint(null) as artist_moment_push_enabled				
+, tinyint(null) as artist_post_push_enabled				
+, tinyint(null) as comment_push_enabled					
+, tinyint(null) as community_anniversary_push_enabled		
+, tinyint(null) as community_media_push_enabled			
+, tinyint(null) as community_notice_push_enabled			
+, tinyint(null) as following_push_enabled					
+, part_comm_id							
+, part_date								
+, run_timestamp							
+from we_mart_wv1.wv_comm_user a 
+""""""
+#df = spark.sql(q)
+#df.write.mode('overwrite').format('delta').partitionBy('part_comm_id', 'part_date').saveAsTable('we_mart.wv_comm_user')"
+17,py,,code,"#q = """"""select * from we_mart.wv_comm_user""""""
+#df = spark.sql(q)
+#df.write.mode('overwrite').format('delta').partitionBy('part_comm_id', 'part_date').saveAsTable('we_mart_wv1.wv_comm_user')
+"

@@ -1,0 +1,541 @@
+,cell_type,cell_title,role,codes
+1,md ,,etc, ### we_mart.we_
+2,md,,basic_info,"#### Basic Info
+* 아티스트 메타정보
+* META TABLE
+* DAILY Refresh 
+* WIKI [https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/2909864022/we+mart.view+we+artist]  
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2024-05-23|윤상혁|위콘페2024 데이터 임시 생성|
+|2023-12-15|윤상혁|wecode 기준으로 로직 변경|
+|2023-09-21|윤상혁|we_art_id is not null인 경우만 마트에 남기도록 로직 수정|
+|2023-07-21|윤상혁|이진혁 폐쇄 커뮤니티 대응|
+|2023-05-23|윤상혁|커뮤니티명 변경 이슈 방어로직 추가|
+|2023-05-04|윤상혁|DM오픈일자 추가|
+|2023-02-28|윤상혁|WV+WS 조인키 변경, 기타 오류 수정|
+|2022-11-28|윤상혁|데뷔일자, 커뮤니티 공개 타입 추가|
+|2022-11-14|박상민|커뮤니티 url_path 변수 추가|
+|2022-10-31|윤상혁|포닝 alias 15자 문제 대응|
+|2022-10-19 |윤상혁|WV+WS 조인키 변경|
+|2022-09-28 |윤상혁|커뮤니티 오픈일자 로직 변경|
+|2022-09-05 |윤상혁|WV+WS 조인키 변경|
+|2022-07-15 |윤상혁|위버스2 데이터 대응|
+|2022-06-20 |윤상혁|커뮤니티-샵 JOIN키 변경|
+|2022-06-13 |윤상혁|커뮤니티/샵 오픈 순서에 따른 오류 수정|
+|2022-04-20 |윤상혁|오픈일자 추가 & 테이블로 전환|
+|2021-11-29 |박상민|VIEW테이블생성|
+
+###### Source Tables
+* weverse.community
+* weverse.artist
+* weverseshop.label_artist
+* weverseshop.membership
+* weverseshop.label_artist_shop
+* service_log.weplyapi_client_log "
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"")
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'we_artist', 
+  'service' : None, #default (None)
+  'partition' : None
+}
+option = {
+  'date' : key,
+  'format':'delta', #default (delta)
+  'mode':'overwrite', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+  'error_level' : 0
+}
+"
+6,md,,just_heading,#### Main Query
+7,md,,just_heading,##### View WV
+8,py,,code,"query1 = f""""""
+select artist_code
+  , WEART.we_art_name
+  , WEART.comm_id
+  , WEART.comm_name
+  , cast(WEART.is_comm_enabled as bigint) as is_comm_enabled
+  , cast(WEART.is_comm_fronzen as bigint) as is_comm_fronzen
+  , WEART.is_fc_enabled
+  , WEART.comm_cre_date
+  , cast(WEART.comm_cre_dt as timestamp) as comm_cre_dt
+  , WEART.fc_name
+  , cast(WEART.is_comm_show_member_count as int) as is_comm_show_member_count
+  , WEART.comm_to_artist_tags
+  , WEART.comm_url_path
+  , WEART.comm_open_type
+  , WEART.cnt_art_indi
+  , WEART.cnt_art_indi_active
+  , WEART.arr_comm_art_indi_id
+  , WEART.arr_comm_art_indi_name
+  , cast(WEART.comm_open_date as date) as comm_open_date
+  , WEART.debut_date
+  , date(nvl2(WDM.community_id, '{key}', null)) as wdm_open_date
+from
+(
+select
+distinct artist_code
+, upper(COM.comm_name)	as we_art_name
+-- 주요 id, name, status
+, COM.comm_id
+, COM.comm_name
+, COM.is_comm_enabled
+, COM.is_comm_fronzen
+, COM.is_fc_enabled
+-- community 부가 정보
+, COM.comm_cre_date
+, COM.comm_cre_dt
+, COM.comm_open_date
+, COM.fc_name
+, COM.is_comm_show_member_count
+, COM.comm_to_artist_tags
+, COM.comm_url_path
+, COM.comm_open_type
+, COM.debut_date 
+-- 기타 통계 
+, count(distinct ARM.art_member_id) 													as cnt_art_indi
+, count(distinct case when ARM.is_enabled = 1 then ARM.art_member_id end ) 			as cnt_art_indi_active
+, collect_list(DISTINCT ARM.user_id) 											as arr_comm_art_indi_id
+, collect_list(DISTINCT ARM.name) 											as arr_comm_art_indi_name
+from
+(
+  select id as comm_id
+      , case when id in (42,73,126,170,171) then name else alias end as comm_name
+      , case when is_deleted = 'true' then 0 else 1 end as is_comm_enabled
+      , case when data:frozenYn = 'true' then 1 else 0 end as is_comm_fronzen
+      , case when artist_code is not null and fandom_name is not null then 1 else 0 end as is_fc_enabled
+      , date(from_unixtime(created_at/1000 + 3600 * 9)) as comm_cre_date
+      , to_timestamp(from_unixtime(created_at/1000 + 3600 * 9)) as comm_cre_dt
+      , nvl(to_timestamp(replace(data:openDate,'.','-')), to_timestamp(from_unixtime(data:openAt/1000 + 3600 * 9))) as comm_open_date
+      , case when artist_code is not null and fandom_name is not null then fandom_name end as fc_name
+      , data:showMemberCount as is_comm_show_member_count
+      , data:toArtistTags as comm_to_artist_tags
+      , url_path as comm_url_path
+      , data:openType as comm_open_type
+      , date(from_unixtime(data:artistGroup.debutDay.date/1000+32400)) as debut_date
+      , artist_code
+  from weverse2.community_common_community
+  where id not in (12)
+)as COM 
+left join 
+(
+    select community_id as comm_id
+        , user_id
+        , concat(community_id,'-',user_id) as art_member_id
+        , coalesce(data:officialName.values.ko, data:officialName.values.en, data:officialName.values.jp) as name
+        , case when data:enable = 'true' then 1 else 0 end as is_enabled
+    from weverse2.community_member_special_member
+    where special_member_type = 'ARTIST'
+) ARM on COM.comm_id = ARM.comm_id 
+group by 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16
+) WEART
+left join 
+(
+    select distinct community_id
+    from wev_prod.weverse2.wdm_common_dm
+    where sale_status = 'SALE'
+) as WDM on WDM.community_id = WEART.comm_id
+""""""
+spark.sql(query1).createOrReplaceTempView('WV')"
+9,md,,just_heading,##### View WS
+10,py,,code,"query2 = f""""""
+select 
+      WEART.common_artist_code
+     ,WEART.we_art_name
+     ,WEART.ws_art_id 
+     ,WEART.ws_art_name 
+     ,WEART.fc_artist_code
+     ,WEART.is_shop_enabled 
+     ,WEART.is_shop_show_app
+     ,WEART.ws_art_short_name
+     ,WEART.ws_art_create_dt
+     ,WEART.ws_label_id 
+     ,WEART.gl_shop_art_id
+     ,WEART.jp_shop_art_id
+     ,WEART.us_shop_art_id
+     ,WEART.ws_label_name
+     ,WEART.ws_label_cre_dt
+     ,WEART.arr_fc_id
+     ,WSOPN.shop_open_date
+  from
+  (
+  select
+  distinct  
+    ARS.common_artist_code
+  , upper(ARS.name)	as we_art_name
+  -- 주요 id, name, status
+  , ARS.label_artist_id 					as ws_art_id
+  , ARS.name 								as ws_art_name
+  , ARS.membership_artist_code 			as fc_artist_code
+  , coalesce(ARS.use_shop,0) 				as is_shop_enabled
+  -- shop 부가 정보
+  , coalesce(ARS.show_app,0) 				as is_shop_show_app
+  , upper(ARS.short_name) 				as ws_art_short_name
+  , ARS.created_at 						as ws_art_create_dt
+  , ARS.parent_id 						as ws_label_id
+  , LAA.gl_shop_art_id
+  , LAA.jp_shop_art_id
+  , LAA.us_shop_art_id
+  , LAB.name 								as ws_label_name
+  , LAB.created_at 						as ws_label_cre_dt
+  -- 기타 통계 
+  , collect_list(DISTINCT MEM.membership_id)									as arr_fc_id
+  from
+  (
+    select label_artist_id
+        , name
+        , membership_artist_code
+        , use_shop
+        , show_app
+        , created_at
+        , parent_id
+        , case when label_artist_id = 67 then name else short_name end as short_name
+        , case when label_artist_id = 114 then 'WEVERSECON2024' else common_artist_code end as common_artist_code
+    from weverseshop.label_artist
+    where short_name is not null
+  ) as ARS 
+  left join (select * from weverseshop.label_artist where short_name is null) as LAB on ARS.parent_id = LAB.label_artist_id
+  left join 
+  (
+      SELECT a.membership_id, c.artist_code
+      FROM membership.membership a
+      LEFT JOIN membership.artist_shop_version b ON b.artist_shop_version_id = a.artist_shop_version_id
+      LEFT JOIN membership.artist c ON c.artist_id  = b.artist_id 
+  ) as MEM on ARS.membership_artist_code  = MEM.artist_code
+  left join 
+  (
+  select
+  label_artist_id
+  , max(case when shop = 'GL' then label_artist_shop_id end ) as gl_shop_art_id
+  , max(case when shop = 'JP' then label_artist_shop_id end ) as jp_shop_art_id
+  , max(case when shop = 'US' then label_artist_shop_id end ) as us_shop_art_id
+  from weverseshop.label_artist_shop
+  group by 1
+  )  as LAA ON ARS.label_artist_id = LAA.label_artist_id
+  group by 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+  ) as WEART
+  left join
+  (
+      select cast(label_artist_id as bigint) as ws_art_id, date('{key}')  as shop_open_date, count(distinct s_wemember_id) as ws_vst_cnt
+      from service_log.weplyapi_client_log 
+      where date_id = '{key}'
+      group by 1
+      having count(distinct s_wemember_id) > 10
+  ) as WSOPN on WSOPN.ws_art_id = WEART.ws_art_id
+""""""
+spark.sql(query2).createOrReplaceTempView('WS')"
+11,md,,just_heading,##### MERGE WECODE+WV+WS
+12,py,,code,"query3 = f""""""
+SELECT
+  -- 중복 ROW MERGE
+    we_art_id
+  , max(we_art_name) as we_art_name
+  , max(comm_id) as comm_id
+  , max(comm_name) as comm_name
+  , max(ws_art_id) as ws_art_id
+  , max(ws_art_name) as ws_art_name
+  , max(fc_artist_code) as fc_artist_code
+  , max(is_comm_enabled) as is_comm_enabled
+  , max(is_comm_fronzen) as is_comm_fronzen
+  , max(is_shop_enabled) as is_shop_enabled
+  , max(is_fc_enabled) as is_fc_enabled
+  , max(comm_cre_date) as comm_cre_date
+  , max(comm_cre_dt) as comm_cre_dt
+  , max(fc_name) as fc_name
+  , max(is_comm_show_member_count) as is_comm_show_member_count
+  , max(comm_to_artist_tags) as comm_to_artist_tags
+  , max(comm_url_path) as comm_url_path
+  , max(comm_open_type) as comm_open_type
+  , max(is_shop_show_app) as is_shop_show_app
+  , max(ws_art_short_name) as ws_art_short_name
+  , max(ws_art_create_dt) as ws_art_create_dt
+  , max(ws_label_id) as ws_label_id
+  , max(gl_shop_art_id) as gl_shop_art_id
+  , max(jp_shop_art_id) as jp_shop_art_id
+  , max(us_shop_art_id) as us_shop_art_id
+  , max(ws_label_name) as ws_label_name
+  , max(is_hybe_art) as is_hybe_art
+  , max(ws_label_cre_dt) as ws_label_cre_dt
+  , max(cnt_art_indi) as cnt_art_indi
+  , max(cnt_art_indi_active) as cnt_art_indi_active
+  , max(arr_fc_id) as arr_fc_id
+  , max(arr_comm_art_indi_id) as arr_comm_art_indi_id
+  , max(arr_comm_art_indi_name) as arr_comm_art_indi_name
+  , max(comm_open_date) as comm_open_date
+  , max(null) as comm_deact_date
+  , max(shop_open_date) as shop_open_date
+  , max(debut_date) as debut_date
+  , max(wdm_open_date) as wdm_open_date
+  , max(wecode) as wecode
+  , max(wecode_name) as wecode_name 
+  , max(is_contracted) as is_contracted
+  , max(company_code) as company_code
+  , max(company_name) as company_name
+  , max(group_tag) as group_tag
+  , max(ctry_code) as ctry_code
+FROM
+(
+    -- 초기 아티스트코드 발급 오류 건 수정
+    -- WV, WS의 코드값이 달라서 각기 다른 entity_code와 조인됨.
+    -- max로 보정 필요
+    SELECT case when BASE.we_art_id = 1625 then 105
+              when BASE.we_art_id = 942 then 51
+              else BASE.we_art_id end as we_art_id
+      , case when BASE.we_art_id = 136 then 'SM_CONCERT' else nvl(WV.we_art_name, WS.we_art_name) end as we_art_name
+      , WV.comm_id
+      , WV.comm_name
+      , WS.ws_art_id
+      , WS.ws_art_name
+      , WS.fc_artist_code
+      , WV.is_comm_enabled
+      , WV.is_comm_fronzen
+      , WS.is_shop_enabled
+      , WV.is_fc_enabled
+      , WV.comm_cre_date
+      , WV.comm_cre_dt
+      , WV.fc_name
+      , WV.is_comm_show_member_count
+      , WV.comm_to_artist_tags
+      , WV.comm_url_path
+      , WV.comm_open_type
+      , WS.is_shop_show_app
+      , WS.ws_art_short_name
+      , WS.ws_art_create_dt
+      , WS.ws_label_id
+      , WS.gl_shop_art_id
+      , WS.jp_shop_art_id
+      , WS.us_shop_art_id
+      , WS.ws_label_name
+      , BASE.is_hybe as is_hybe_art
+      , WS.ws_label_cre_dt
+      , WV.cnt_art_indi
+      , WV.cnt_art_indi_active
+      , WS.arr_fc_id
+      , WV.arr_comm_art_indi_id
+      , WV.arr_comm_art_indi_name
+      , WV.comm_open_date
+      , WS.shop_open_date
+      , WV.debut_date
+      , WV.wdm_open_date
+      , null as group_tag
+      , null as ctry_code
+      , BASE.entity_code as wecode
+      , BASE.entity_name as wecode_name
+      , BASE.is_contracted
+      , BASE.company_code
+      , BASE.company_name
+  FROM
+  (
+    SELECT a.we_art_id
+        , a.entity_code
+        , a.entity_name
+        , b.is_contracted
+        , b.is_contract_level_entity
+        , b.kr_name
+        , b.en_name
+        , b.jp_name
+        , d.company_code
+        , d.company_name
+        , d.is_hybe
+    FROM wev_prod.wecode.tb_entity a
+    LEFT JOIN wev_prod.wecode.tb_entity_meta b on b.entity_id = a.id
+    LEFT JOIN wev_prod.wecode.tb_affiliate_company c on c.entity_meta_id = b.id
+    LEFT JOIN wev_prod.wecode.tb_subsidiary_company d on d.id = c.subsidiary_company_id
+    where b.is_contract_level_entity = 1
+    union all
+    -- 위버스콘 2024 데이터 임시로 생성
+    SELECT 143 as we_art_id
+         , 'WEVERSECON2024' as entity_code
+         , 'WEVERSECON2024' as entity_name
+         , 1 as is_contracted
+         , 1 as is_contract_level_entity
+         , 'WEVERSECON2024' as kr_name
+         , 'WEVERSECON2024' as en_name
+         , 'WEVERSECON2024' as jp_name
+         , 'MISC' as company_code
+         , 'Miscellaneous' as company_name
+         , 0 as is_hybe
+  ) BASE 
+  LEFT JOIN WV on WV.artist_code = BASE.entity_code
+  LEFT JOIN WS on WS.common_artist_code = BASE.entity_code
+)
+GROUP BY we_art_id
+""""""
+spark.sql(query3).createOrReplaceTempView('WE')"
+13,py,,code,"merge_query = f""""""
+merge into wev_prod.we_mart.we_artist as t using WE as s on t.we_art_id = s.we_art_id
+when matched then update set
+  t.we_art_name = s.we_art_name
+, t.comm_id = nvl(t.comm_id, s.comm_id)
+, t.comm_name = s.comm_name
+, t.is_comm_enabled = cast(s.is_comm_enabled as bigint)
+, t.is_comm_fronzen = cast(s.is_comm_fronzen as bigint)
+, t.is_fc_enabled = s.is_fc_enabled
+, t.comm_cre_date = s.comm_cre_date
+, t.comm_cre_dt = cast(s.comm_cre_dt as timestamp)
+, t.fc_name = s.fc_name
+, t.is_comm_show_member_count = cast(s.is_comm_show_member_count as int)
+, t.comm_to_artist_tags = s.comm_to_artist_tags
+, t.comm_url_path = s.comm_url_path
+, t.comm_open_type = s.comm_open_type
+, t.cnt_art_indi = s.cnt_art_indi 
+, t.cnt_art_indi_active = s.cnt_art_indi_active 
+, t.arr_fc_id = s.arr_fc_id
+, t.arr_comm_art_indi_id = s.arr_comm_art_indi_id 
+, t.arr_comm_art_indi_name = s.arr_comm_art_indi_name 
+, t.comm_open_date = date(nvl(t.comm_open_date, s.comm_open_date))
+, t.comm_deact_date = case when t.comm_deact_date is null  and t.comm_open_type = 'PUBLIC' and (s.is_comm_fronzen = 1 or s.comm_open_type != 'PUBLIC') and t.comm_open_date <= date('{key}') then date('{key}') else t.comm_deact_date end
+, t.debut_date = date(nvl(t.debut_date, s.debut_date)) 
+, t.wdm_open_date = nvl(t.wdm_open_date, s.wdm_open_date)
+, t.ws_art_id = nvl(t.ws_art_id, s.ws_art_id)
+, t.ws_art_name = s.ws_art_name
+, t.fc_artist_code = s.fc_artist_code
+, t.is_shop_enabled = s.is_shop_enabled
+, t.is_shop_show_app = s.is_shop_show_app
+, t.ws_art_short_name = s.ws_art_short_name
+, t.ws_art_create_dt = s.ws_art_create_dt
+, t.ws_label_id = s.ws_label_id
+, t.gl_shop_art_id = s.gl_shop_art_id
+, t.jp_shop_art_id = s.jp_shop_art_id
+, t.us_shop_art_id = s.us_shop_art_id
+, t.ws_label_name = s.ws_label_name
+, t.is_hybe_art = s.is_hybe_art
+, t.ws_label_cre_dt = s.ws_label_cre_dt 
+, t.shop_open_date = case when t.shop_open_date is null and s.is_shop_show_app = 1 then s.shop_open_date else t.shop_open_date end
+, t.wecode = s.wecode
+, t.wecode_name = s.wecode_name 
+, t.is_contracted = s.is_contracted
+, t.company_code = s.company_code
+, t.company_name = s.company_name
+, t.group_tag = nvl(t.group_tag, s.group_tag)
+, t.ctry_code = nvl(t.ctry_code, s.ctry_code)
+when not matched then insert *
+"""""""
+14,md,,just_heading,#### RUN
+15,py,,code,"# run 
+#b = Dataflow(run_mode=run_mode, notifier=noti)
+#b.run(dataframe=df, table_info=table, option=option, buckets=['databricks'])"
+16,py,,code,"import requests 
+import json
+
+def message_to_slack(table, status, text=None):
+  if status == 'SUCCESS' :
+    color = '#36a64f'
+  else :
+    color = '#9b111e'
+    
+  attach = [
+        {
+	        ""mrkdwn_in"": [""text""],
+            ""color"": color,
+            ""title"": table,
+            ""text"": text
+        }
+    ]
+  return requests.post('https://slack.com/api/chat.postMessage', {
+        'token': dbutils.secrets.get(scope=""slack"", key=""slack-token""),
+        'channel': dbutils.secrets.get(scope=""slack"", key=""analytics-channel""), #da-monitoring'
+        'attachments': json.dumps(attach)
+    }).json()	"
+17,py,,code,"from datetime import datetime, timedelta
+from pytz import timezone, utc
+
+KST = timezone('Asia/Seoul')
+date = datetime.now()
+date.replace(tzinfo=KST) # tzinfo만 변경
+date = date + timedelta(days = -1)
+str_date = date.date().strftime('%Y-%m-%d')
+
+try :
+    status='SUCCESS'
+    df = spark.sql(merge_query)
+    re = df.collect()[0] 
+    if re['num_updated_rows'] + re['num_inserted_rows']  == 0 and str_date == key : #결과값 0 이면 raise 이용하여 exception 발생
+        raise
+    text = '{} DONE'.format(key)
+except Exception as exception:
+    status = 'ERROR'
+    text = '{} FAIL\n{}'.format(key, exception)     
+    raise 
+finally :
+    message_to_slack(table['table_name'], status, text) "
+18,md ,,etc, ### appendix
+19,md,,just_heading,#### create table
+20,py,,code,"q = """"""
+CREATE OR REPLACE TABLE we_mart.we_artist
+(
+ we_art_id					int 			comment	""아티스트id""
+,we_art_name					string 			comment	""아티스트명""
+,comm_id						bigint			comment ""커뮤니티id""
+,comm_name					string			comment ""커뮤니티명""
+,ws_art_id					bigint			comment ""위버스샵 id""
+,ws_art_name					string			comment ""위버스샵 명""
+,fc_artist_code				string			comment ""멤버십 아티스트 코드""
+,is_comm_enabled				bigint			comment ""사용 가능한 커뮤니티 유무""
+,is_comm_fronzen				bigint			comment ""커뮤니티 중지 유무""
+,is_shop_enabled				int				comment ""샵 오픈 유무""
+,is_fc_enabled				int				comment ""멤버십 오픈 유무""
+,comm_cre_date				date			comment ""커뮤니티 생성일자""
+,comm_cre_dt					timestamp		comment ""커뮤니티 생성시각""
+,fc_name						string			comment ""FC멤버십명""
+,is_comm_show_member_count	int				comment ""위버수 표기 유무""
+,comm_to_artist_tags			string			comment ""to_artist용 태그 설정값""
+,comm_url_path			string			comment ""community url path""
+,is_shop_show_app			int				comment ""샵 노출 유무""
+,ws_art_short_name			string			comment ""위버스샵 short name""
+,ws_art_create_dt			timestamp		comment ""샵 생성시각""
+,ws_label_id					bigint			comment ""레이블 id""
+,gl_shop_art_id				bigint			comment  ""GL샵 ID""
+,jp_shop_art_id				bigint			comment  ""JP샵 ID""
+,us_shop_art_id				bigint			comment  ""US샵 ID""
+,ws_label_name				string			comment  ""레이블명""
+,is_hybe_art                int      		comment  ""하이브 아티스트 유무""
+,ws_label_cre_dt				timestamp		comment ""레이블 생성시각""
+,cnt_art_indi				bigint			comment ""개별 멤버수""
+,cnt_art_indi_active			bigint			comment """"
+,arr_fc_id					array<bigint>	comment ""FC 멤버십상품 id""
+,arr_comm_art_indi_id		array<bigint>	comment ""개별 멤버 comm_user_id""
+,arr_comm_art_indi_name		array<string>	comment ""개별 멤버명""
+,comm_open_date 				date 			comment ""커뮤니티 오픈일자""
+,comm_deact_date 				date 			comment ""커뮤니티 비활성화 일자""
+,shop_open_date 				date 			comment ""샵 오픈일자""
+,debut_date 				date 			comment ""데뷔일자""
+,wdm_open_date 				date 			comment ""DM 오픈일자""
+, wecode string comment ""WECODE 식별자"" 
+, wecode_name string comment ""wecode name""
+, is_contracted tinyint comment ""현재 플랫폼 입점유무""
+, company_code string comment ""레이블 코드"" 
+, company_name string comment ""레이블명"" 
+,group_tag         array<string> comment ""분석용 태그""
+,ctry_code         string        comment ""아티스트 국가""
+)
+comment ""아티스트 메타정보""
+""""""
+#spark.sql(q)"
+21,md,,just_heading,#### WECODE 적용
+22,py,,code,"q = """"""
+alter table wev_prod.we_mart.we_artist add columns (
+  wecode string comment ""WECODE 식별자"" after wdm_open_date
+, wecode_name string comment ""wecode name"" after wecode
+, is_contracted tinyint comment ""현재 플랫폼 입점유무"" after wecode_name
+, company_code string comment ""레이블 코드"" after is_contracted
+, company_name string comment ""레이블명"" after company_code
+)
+""""""
+# spark.sql(q)
+"

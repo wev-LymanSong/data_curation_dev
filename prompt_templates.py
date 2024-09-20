@@ -27,6 +27,7 @@ GENERAL_GUIDE = """
     - **`we_mart` tables**: There are three primary types of tables:
 
     - Mart tables: Transactional data collected from operational databases and `we_meta`. The names are prefixed with the service code and the subject.
+        - Some tables are not transactional data but are created as meta data, and would be used as a source table for other(downstream) tables.
         - Example: `we_user` represents user information from Weverse, and `ws_order` stores order details from Weverse Shop.
 
     - Stat tables: Aggregated, processed data used for analytical purposes. Stat tables are prefixed with "stats," followed by the time interval, service code, and subject.
@@ -200,6 +201,13 @@ STAT_TABLE_NOTICE_TEMPLATE = """
     *   정보 서술
 """
 
+field2table_notice_template = {
+    'we_mart' : MART_TABLE_NOTICE_TEMPLATE, 
+    'we_meta' : META_TABLE_NOTICE_TEMPLATE, 
+    'we_stats' : STAT_TABLE_NOTICE_TEMPLATE, 
+    'wi_view' : "no view table template.", 
+}
+
 
 TABLE_NOTICE_PROMPT = """
 You are tasked with creating a data table specification document based on a Python notebook containing a series of queries for creating data. This document will help future users understand the structure, purpose, and proper usage of the target table. Follow these instructions carefully:
@@ -232,6 +240,8 @@ You are tasked with creating a data table specification document based on a Pyth
 - Cautions when joining this table with others
 - How to extract meaningful insights or perform specific analyses
 - The level of the target table (e.g., aggregated or detailed)
+- The table could be a transactional, meta, or aggregated(statistics) data table. The options are provided in the template document, so choose the appropriate one.
+    - we_mart table can be one of 3 types, on the other hand, we_meta tables are always meta tables and we_stats tables are always statistics tables.
 
 6. Format your output as follows:
 - Use a series of bullet points to summarize key insights and findings
@@ -390,7 +400,7 @@ Remember, the goal is to provide clear, practical examples that demonstrate effe
 
 
 DOWNSTREAM_TABLE_INFO_PROMPT = template ="""
-You are tasked with creating example SQL queries or Python scripts using a provided target table, based on given input queries and/or code blocks. Your goal is to demonstrate how to use the target table in SQL queries and Python code (mainly with PySpark), focusing on filtering specific columns and joining with other tables when necessary.
+You are tasked with creating a series of SQL queries or Python scripts usecases using a provided target table, based on given input queries and/or code blocks. Your goal is to demonstrate how to use the target table in SQL queries and Python code (mainly with PySpark), focusing on filtering specific columns and joining with other tables when necessary.
 
 **Input Data**
 
@@ -404,25 +414,16 @@ This is the source code for the target table:
 {target_table_source_code}
 </target_table_source_code>
 
-You will be given a set of Python scripts for downstream tables that use the target table as a source, as well as several data extraction samples for requests. These follow the rules:
-
-- For extract queries,
-  - Each extract query is divided by an issue_id (e.g., `==DATA-NNNN==`, where NNNN is a four-digit number like `==DATA-1234==`), originating from a notebook file (.sql or .py notebook file).
-  - Some may include request descriptions.
-
+You will be given a set of Python scripts for downstream (view)tables that use the target table as a source, as well as several data extraction samples for requests. These follow the rules:
 - For Python scripts for downstream tables,
   - Python scripts for downstream tables are divided by table name (e.g., `==we_table==`).
+  - The source code of each downstream table consists of multiple cells, each cell would have PySpark code or SQL code wrapped by PySpark. PySpark native code is used for additional data processing in many cases.
 
 - An extract query or Python script consists of multiple cells, each cell has:
     - `cell_type`: indicates whether the cell is Python or SQL.
     - `cell_title`: (Optional) the cell title.
     - `role`: the role of the cell in the source code (e.g., code, heading, description, etc.).
     - `code`: the source code (a SQL query or a Python script).
-    
-Here are the input queries and extracts for data requests:
-<extract_samples>
-{extract_samples}
-</extract_samples>
 
 Here are the Python scripts for downstream tables:
 <downstream_table_source_code>
@@ -444,62 +445,53 @@ Carefully examine the input queries/code blocks and identify common themes, freq
 4. Potential joins with other tables.
 5. Review the source code of the target table provided (`target_table_source_code`).
 
-Based on your analysis, create 2-4 example SQL queries or Python scripts that demonstrate how to use the target table in both downstream batch tables and data extraction queries. Each example should:
-
-1. Address a specific use case or information request.
-2. Show appropriate filtering of columns.
-3. Include joins with other tables if relevant.
-4. Demonstrate proper SQL syntax and best practices.
-
-* Feel free to create new examples that may not be directly related to the sample queries but showcase interesting use cases based on the target table's structure and available columns.
+Based on your analysis, list the downstream tables and view tables with a brief description of how it uses the target table as a source table.
 
 **Output Format**
 
 Separate your output into two subsections:
 
-- **Downstream Table/View**
-  - Examples of how to use the target table when creating downstream tables or views. 
-  - These can be used in batch source code or view table creation clauses.
-  - Don't generate a complete SQL QUERY! Just give a part of SQL query or pyspark code blocks like how to join the target table with others.
+- **Downstream Table**
+  - Breif description of the purpose of the table and how it uses the target table in whichever way.
+  - Explains how the future user can use the table for data extraction to fulfill specific requests.
 
-- **Data Extraction**: Examples of how to use the target table for data extraction to fulfill specific requests.
+- **Downstream View tables**
+  - Brief description of the purpose of the view table and how it uses the target table in whichever way.
 
-Present your examples in the following markdown-formatted bullet point structure, with the code block indented under its own bullet:
+You can skip Downstream Table or Downstream View tables if there are no relevant usecases.
+Present your usecases in the following markdown-formatted bullet point structure, with the code block indented under its own bullet:
 <output_example>
-### Downstream Table/View
-- [Brief description of the use case]
-    - ```sql/py
-      [Your SQL query/Python code block here]
-      ```
-    - ```sql/py
-      [Your SQL query/Python code block here]
-      ```
+### Downstream Tables
+- **[Table name 1]** : [Brief description of the table]
+    - [A little bit more specific description and how it uses the target table as a source table]
+    - [How the furture user can use the table for data extraction to fulfill specific requests]
+- **[Table name 2]** : [Brief description of the table]
+    - [A little bit more specific description and how it uses the target table as a source table]
+    - [How the furture user can use the table for data extraction to fulfill specific requests]
+- ...
 
-### Data Extraction
-- [Brief description of the use case]
-    - ```sql/py
-      [Your SQL query/Python code block here]
-      ```
-    - ```sql/py
-      [Your SQL query/Python code block here]
-      ```
+### Downstream View Tables
+- **[View table name 1]** : [Brief description of the view table]
+    - [view table infomations]
+- **[View table name 2]** : [Brief description of the view table]
+    - [view table infomations]
+- ...
+
 </output_example>
 
 The indentation level has to be strictly maintained for proper code execution.
 
 Provide your entire markdown-formatted output within `<answer>` tags. The descriptions should be written in Korean.
 한국어 결과는 존댓말이 아닌 단답으로 해줘. (예: "A 컬럼을 파티션 키로 활용합니다." 대신 "A 컬럼을 파티션 키로 활용")
-Ensure that your examples cover a range of scenarios and query complexities. Include comments to explain key parts or reasoning behind certain choices.
+Ensure that your usecases cover a range of scenarios and query complexities. Include comments to explain key parts or reasoning behind certain choices.
 
 **Additional Guidelines**
 
 - Use aliases for table and column names when appropriate.
-- Exclude all specific data in the query. For instance, substitute a specific artist name with "ARTIST" and a specific date with "2024-01-01".
-- Include proper indentation and formatting in your code blocks for readability.
+- Include proper indentation and formatting in your code blocks for readability and markdown compiles.
 - If you make assumptions about table structures or relationships, briefly explain them in comments.
-- Vary the complexity of your examples, from simple queries to more advanced ones involving subqueries or multiple joins.
 - Remove overly simple or redundant queries.
-- For SQL queries, write them in the style provided below and keep the SELECT statements concise rather than listing many columns on separate lines.
+- For SQL queries, write them in the style provided below and keep the SELECT statements concise rather than listing many columns in separate lines.
   - ```
     select `column_name1`, `column_name2`, sum(`column_name3`)
     from `catalog_name`.`db_name`.`table_name`
@@ -507,8 +499,6 @@ Ensure that your examples cover a range of scenarios and query complexities. Inc
     group by `column_name1`, `column_name2`
     order by `column_name1`, `column_name2`
     ```
-- You may create new examples based on the structure and columns defined in the target table's source code.
-- If there are fewer than 3 samples provided, avoid relying too heavily on them. Instead, focus more on the target table's structure and general data warehouse guidelines to create diverse and relevant examples.
 
-Remember, the goal is to provide clear, practical examples that demonstrate effective use of the target table in SQL queries and Python scripts.
+Remember, the goal is to provide clear, concise usecases demonstrate effective use of the target table in Python scripts.
 """

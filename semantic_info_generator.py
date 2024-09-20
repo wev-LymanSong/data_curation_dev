@@ -1,6 +1,4 @@
 from configurations import *
-from operator import itemgetter
-from time import time
 from gedi_wev.utils import table_utils as tu
 from static_data_collector import StaticDataCollector
 from prompt_templates import *
@@ -68,6 +66,7 @@ class SemanticInfoGenerator(object):
 
         # ================== Data for context ========================
         ## df_str: TARGET_TABLE 의 소스코드 데이터
+        
         tmp_df = pd.read_csv(os.path.join(SOURCECODE_DIR, f"{self.TARGET_TABLE}.csv"))
         tmp_df = tmp_df.iloc[tmp_df[tmp_df['role'] == "setting"].index.values[0] + 1 : ] # 노트북에서 `setting` 헤더 이후 코드블록만 가져오기
         self.df_str = tu.df2str(tmp_df)
@@ -90,7 +89,7 @@ class SemanticInfoGenerator(object):
                 "notebook_code" : self.df_str,
                 "data_specification_documents" : "No related tables",
                 "general_guide" : GENERAL_GUIDE,
-                "template_document" : MART_TABLE_NOTICE_TEMPLATE 
+                "template_document" : field2table_notice_template[self.TARGET_FIELD] 
             }
         )
         return table_notice
@@ -117,7 +116,7 @@ class SemanticInfoGenerator(object):
             ds_tables_samples += f"\n\n=={r['table_name'].split(".")[0]}==\n\n"
             with open(os.path.join(REPO_DIR, r['file_path']), "rb") as f:
                 source_code_cells = "".join([l.decode() for l in f.readlines()])
-                source_code_lang = 'PYTHON' if source_code_cells.startswith(NOTEBOOK_PREFIX_PY) else "SQL"
+                source_code_lang = 'PYTHON' if source_code_cells.startswith(NOTEBOOK_PREFIX_PY) else NOTEBOOK_PREFIX_SQL
                 f.close()
             code_blocks = DatabricksConnector.get_formatted_blocks(
                 source_code_cells=source_code_cells, 
@@ -139,6 +138,39 @@ class SemanticInfoGenerator(object):
         )
 
         return how_to_use
+    def get_downstream_table_info(self):
+        #### Downstream 테이블들 중 몇가지만 가져오기
+        ds_tables = SemanticInfoGenerator.gc.search_tables(target_table_name=self.TARGET_TABLE)
+        ds_tables = ds_tables[
+            (ds_tables['table_name'].str != self.TARGET_TABLE + ".py") &
+            (ds_tables['file_path'].str.split("/").str[-2].isin(["we_mart", "we_meta", "wi_view"]))
+        ]
 
+        sampled_ds_tables = tu.get_top_n_words(ds_tables, target_column = "table_name", query = self.TARGET_TABLE + ".py", exclude_self_reference = True)
+        ds_tables_samples = ""
+        for i, r in sampled_ds_tables.iterrows():
+            ds_tables_samples += f"\n\n=={r['table_name'].split(".")[0]}==\n\n"
+            with open(os.path.join(REPO_DIR, r['file_path']), "rb") as f:
+                source_code_cells = "".join([l.decode() for l in f.readlines()])
+                source_code_lang = 'PYTHON' if source_code_cells.startswith(NOTEBOOK_PREFIX_PY) else NOTEBOOK_PREFIX_SQL
+                f.close()
+            code_blocks = DatabricksConnector.get_formatted_blocks(
+                source_code_cells=source_code_cells, 
+                source_code_lang=source_code_lang
+            )
+            code_df = GithubConnector.to_df(code_blocks=code_blocks)
 
+            ds_tables_samples += tu.df2str(code_df)
+
+        downstream_table_info = SemanticInfoGenerator.run(
+            prompt_template = DOWNSTREAM_TABLE_INFO_PROMPT,
+            params = {
+                "target_table" : self.TARGET_TABLE,
+                "target_table_source_code" : self.df_str,
+                "downstream_table_source_code" : ds_tables_samples,
+                "general_guide" : GENERAL_GUIDE
+            }
+        )
+
+        return downstream_table_info
 #=====================
