@@ -4,8 +4,8 @@ import sys
 print(os.getcwd())
 from notion_client import Client
 from markdown_it import MarkdownIt
-from parser_utils import get_heading, get_text_block, get_divider_block 
-from md_table_generator import MdTableGenerator
+from tools.utils.parser_utils import get_heading, get_text_block, get_divider_block 
+from tools.utils.md_table_generator import MdTableGenerator
 import pandas as pd
 
 

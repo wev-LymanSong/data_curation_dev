@@ -381,6 +381,15 @@ Ensure that your examples cover a range of scenarios and query complexities. Inc
 - Use aliases for table and column names when appropriate.
 - Exclude all specific data in the query. For instance, substitute a specific artist name with "ARTIST" and a specific date with "2024-01-01".
 - Include proper indentation and formatting in your code blocks for readability.
+  - KEEP THE INDENTATION EVENLY FOR DEPEND ON THE BULLET LEVEL FOR PROPER CODE DISPLAY. 
+  - For instanace, DO NOT MAKE the code blocks as follows. This will make an error in the markdown compliing.
+    - ```slq/py
+    [code blocks...]
+    ```
+  - DO LIKE THIS.
+    - ```sql/py
+      [code blocks...]
+      ``` ## Do not forget making indentation here!
 - If you make assumptions about table structures or relationships, briefly explain them in comments.
 - Vary the complexity of your examples, from simple queries to more advanced ones involving subqueries or multiple joins.
 - Remove overly simple or redundant queries.

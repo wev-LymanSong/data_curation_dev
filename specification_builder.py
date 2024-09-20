@@ -5,6 +5,9 @@ from tools.utils.md_table_generator import MdTableGenerator
 from mdutils.mdutils import MdUtils
 from itertools import zip_longest
 from functools import wraps
+import time
+import warnings
+warnings.filterwarnings("ignore")
 
 def convert_dtype(dtype):
     dtype_pattern = r'^(array|map)<(struct<[^>]+>|[^<>]+)>$|^[a-zA-Z]+$'
@@ -28,6 +31,22 @@ def safe_access(default_value=""):
                 return default_value
         return wrapper
     return decorator
+
+def timer(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)
+        end = time.time()
+        elapsed_time = end - start
+        # print(args)
+        if len(args) > 1: 
+            print(f"{func.__name__}({args[1]}) 실행 시간: {elapsed_time:.2f}초")
+        else:
+            print(f"{func.__name__} 실행 시간: {elapsed_time:.2f}초")
+        return result
+    
+    return wrapper
 
 class SpecificationBuilder(object):
     
@@ -68,7 +87,8 @@ class SpecificationBuilder(object):
         self.locations = None
         self.dep_table_list = None
         self.dep_down_table_info = "No content."
-
+    
+    @timer
     def collect_static_data(self):
         # BASIC INFO
         dag_items = SpecificationBuilder.dag_task_df[(SpecificationBuilder.dag_task_df["field"] == self.TARGET_FIELD) & (SpecificationBuilder.dag_task_df["table_name"] == self.TARGET_TABLE)]
@@ -147,6 +167,7 @@ class SpecificationBuilder(object):
             dep_tl_rows.append([i if i is not None else ' ', j if j is not None else ' '])
         self.dep_table_list = (dep_tl_header, dep_tl_rows)
     
+    @timer
     def generate_semantic_data(self, target_section):
         if target_section == "TABLE_NOTICE":
             self.table_notice = self.sig.get_table_notice()
@@ -154,7 +175,8 @@ class SpecificationBuilder(object):
             self.how_to_use = self.sig.get_how_to_use()
         elif target_section == 'DOWNSTREAM_TABLE_INFO':
             self.dep_down_table_info = self.sig.get_downstream_table_info()
-
+    
+    @timer
     def build_mdfile(self):
         self.mdFile = MdUtils(file_name=self.TARGET_TABLE, title=f"{self.TARGET_DB}.{self.TARGET_TABLE}")
         ## BASIC INFO
@@ -223,10 +245,11 @@ class SpecificationBuilder(object):
         self.mdFile.create_md_file()
         os.chdir(BASE_DIR)
 
-        
+    
     def print_table_info(self):
         print(f"Current Target Table:({self.self.TARGET_FIELD.upper()}) {self.TARGET_DB}.{self.TARGET_TABLE:<20}")
-
+    
+    @timer
     def read_mdfile(self):
         target_table_dir = os.path.join(SPEC_DIR, self.TARGET_TABLE + ".md").replace("\\", "/")
 
@@ -284,7 +307,10 @@ class SpecificationBuilder(object):
                 if section.startswith('👨‍👩‍👧‍👦 Up/Downstream Table List'):
                     dep_table_list = section.split('\n', 1)[1].strip()
                 elif section.startswith('🐤 Downstream Tables Info'):
-                    dep_down_table_info = section.split('\n', 1)[1].strip()
+                    try:
+                        dep_down_table_info = section.split('\n', 1)[1].strip()
+                    except:
+                        dep_down_table_info = " "
 
         # PIPELINE INFO 섹션에서 locations 정보 추출
         locations = None
@@ -313,17 +339,16 @@ class SpecificationBuilder(object):
                         keywords.append(match)
         
         self.batch_info = batch_infos
-        print(keywords)
         if len(keywords) == 2:
             self.locations = (keywords[0][1], [k[1] for k in keywords[1:]])
         else:
             self.locations = (keywords[0][1], [f"[{k[0]}]({k[1]})" for k in keywords[1:]])
         self.dep_table_list = MdTableGenerator.parse_markdown_table(dep_table_list)
         self.dep_down_table_info = dep_down_table_info
-        
-sb = SpecificationBuilder("wv_comm_user")
-sb.collect_static_data()
-sb.generate_semantic_data("TABLE_NOTICE")
-sb.generate_semantic_data("HOW_TO_USE")
-sb.generate_semantic_data("DOWNSTREAM_TABLE_INFO")
-sb.build_mdfile()
+
+# sb = SpecificationBuilder("wv_comm_user")
+# sb.collect_static_data()
+# sb.generate_semantic_data("TABLE_NOTICE")
+# sb.generate_semantic_data("HOW_TO_USE")
+# sb.generate_semantic_data("DOWNSTREAM_TABLE_INFO")
+# sb.build_mdfile()

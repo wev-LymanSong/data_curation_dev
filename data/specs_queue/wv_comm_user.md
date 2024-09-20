@@ -57,70 +57,80 @@ we_mart.wv_comm_user
   
 ### 테이블 개요
 
-* **테이블 목적**: 위버스 커뮤니티 회원의 정보와 활동 이력을 담고 있는 테이블
+* **테이블 목적**: 위버스 커뮤니티 회원 이력 정보를 담고 있다.
 * **데이터 레벨**: TRANSACTIONAL DATA
 * **파티션 키**: `part_comm_id`, `part_date`
-* **주요 키**: `comm_user_id`
+* **주요 키**: `wv_user_id`, `comm_id`, `comm_user_first_dt`
 
 ### 테이블 특징
 
-* 위버스 커뮤니티 회원의 프로필 정보, 멤버십, 활동 정보, 알림 설정 정보 등을 포함
-* `wv_user_id`, `we_member_id`, `comm_id` 등 다양한 식별자를 통해 회원 정보를 연결
-* `comm_user_first_dt`, `tot_comm_user_first_dt` 등의 컬럼을 통해 회원의 가입 시점을 파악
-* `is_first_user_comm` 컬럼을 통해 커뮤니티 첫 가입 여부 확인 가능
-* `comm_user_status` 컬럼을 통해 회원의 활동 상태(활성화, 비활성화 등) 파악 가능
-* `is_official` 컬럼을 통해 공식 계정 여부 확인 가능
-* `notification_type`, `like_on_comment_alarm`, `hot_post_alarm` 등 다양한 컬럼을 통해 알림 설정 정보 제공
-* `artist_cheering_me_push_enabled`, `artist_comment_push_enabled`, `artist_live_on_air_push_enabled` 등의 컬럼을 통해 푸시 알림 설정 정보 제공
-* `v_ch_join_dt` 컬럼을 통해 V 채널 가입 시점 확인 가능
-* `is_v_user` 컬럼을 통해 V 이관 유무 확인 가능
+* `comm_user_first_dt` 컬럼은 커뮤니티 최초 가입 시점을 나타낸다.
+* `is_first_user_comm` 컬럼은 해당 날짜 기준으로 커뮤니티 첫 가입 여부를 나타낸다.
+* `is_fc` 컬럼은 멤버십 여부를 나타내며, `fc_id` 컬럼은 멤버십 ID를 나타낸다.
+* `art_indi_id`, `art_indi_type`, `art_indi_name` 컬럼은 아티스트 멤버 정보를 나타낸다.
+* `is_official` 컬럼은 공식 계정 여부를 나타낸다.
+* `wv_user_status` 컬럼은 위버스 회원 상태를 나타낸다.
+* `comm_user_status` 컬럼은 커뮤니티 회원 상태를 나타낸다.
+* `comm_user_grade` 컬럼은 커뮤니티 회원 구분을 나타낸다.
+* `notification_type`, `like_on_comment_alarm`, `hot_post_alarm`, `new_fc_alarm` 등 알림 설정 관련 컬럼을 포함한다.
+* `artist_cheering_me_push_enabled`, `artist_comment_push_enabled` 등 푸시 알림 설정 관련 컬럼을 포함한다.
+* `v_ch_join_dt` 컬럼은 V채널 가입 시점을 나타낸다.
+* `is_v_user` 컬럼은 V이관 유무를 나타낸다.
 
 ### 데이터 추출 및 생성 과정
 
-1. **주요 데이터 소스**:
-    * `wev_prod.we_mart.ods_wv_member_profile`: 위버스 커뮤니티 회원 프로필 정보
-    * `wev_prod.weverse2.community_log_member_status_log`: 위버스 커뮤니티 회원 활동 로그 정보
-    * `wev_prod.weverse2.community_member_special_member`: 위버스 커뮤니티 특별 회원 정보
-    * `wev_prod.weverse2.community_common_report`: 위버스 커뮤니티 신고 정보
-    * `wev_prod.we_mart.we_user`: 위버스 회원 정보
-    * `wev_prod.weverse2.notification_push_config`: 위버스 커뮤니티 알림 설정 정보
-    * `wev_prod.we_mart.wv_user_ctry_history`: 위버스 회원 국가 정보
-    * `wev_prod.we_mart.we_artist`: 위버스 아티스트 정보
-    * `we_mart.ws_fc_user_history`: 위버스 멤버십 정보
-    * `wev_prod.we_mart.wv1_join_info`: 위버스 커뮤니티 가입 정보
-2. **데이터 전처리**:
-    * 각 데이터 소스에서 필요한 컬럼을 추출
-    * `comm_user_id` 컬럼을 생성하여 커뮤니티 회원을 식별
-    * `comm_user_first_dt`, `tot_comm_user_first_dt` 컬럼을 계산하여 회원 가입 시점을 파악
-    * `is_first_user_comm` 컬럼을 계산하여 커뮤니티 첫 가입 여부를 확인
-    * `comm_user_status` 컬럼을 계산하여 회원 활동 상태를 파악
-    * `is_official` 컬럼을 계산하여 공식 계정 여부를 확인
-    * `notification_type`, `like_on_comment_alarm`, `hot_post_alarm` 등의 컬럼을 계산하여 알림 설정 정보를 추출
-    * `artist_cheering_me_push_enabled`, `artist_comment_push_enabled`, `artist_live_on_air_push_enabled` 등의 컬럼을 계산하여 푸시 알림 설정 정보를 추출
-3. **데이터 통합**:
-    * 다양한 데이터 소스에서 추출된 데이터를 `wv_user_id`, `we_member_id`, `comm_id` 등의 식별자를 기준으로 결합
-    * `LEFT JOIN`을 사용하여 모든 회원 정보를 포함하도록 함
-4. **최종 테이블 생성**:
-    * 통합된 데이터를 `we_mart.wv_comm_user` 테이블에 저장
-    * `part_comm_id`, `part_date` 컬럼을 파티션 키로 사용하여 데이터를 분할 저장
+1.  **주요 데이터 소스**:
+    *   `wev_prod.we_mart.ods_wv_member_profile`: 위버스 커뮤니티 회원 프로필 정보를 담고 있다.
+    *   `wev_prod.weverse2.community_log_member_status_log`: 위버스 커뮤니티 회원 상태 변경 로그를 담고 있다.
+    *   `wev_prod.weverse2.community_member_special_member`: 위버스 커뮤니티 특별 회원 정보를 담고 있다.
+    *   `wev_prod.weverse2.community_common_report`: 위버스 커뮤니티 신고 정보를 담고 있다.
+    *   `wev_prod.we_mart.we_user`: 위버스 회원 정보를 담고 있다.
+    *   `wev_prod.weverse2.notification_push_config`: 위버스 커뮤니티 알림 설정 정보를 담고 있다.
+    *   `wev_prod.we_mart.wv_user_ctry_history`: 위버스 회원 국가 정보를 담고 있다.
+    *   `wev_prod.we_mart.we_artist`: 위버스 아티스트 정보를 담고 있다.
+    *   `we_mart.ws_fc_user_history`: 위버스 멤버십 정보를 담고 있다.
+    *   `wev_prod.we_mart.wv1_join_info`: 위버스 커뮤니티 회원 가입 정보를 담고 있다.
+2.  **데이터 전처리**:
+    *   각 소스 테이블에서 필요한 컬럼을 추출하고 데이터 타입을 변환한다.
+    *   `comm_user_first_dt`, `tot_comm_user_first_dt`, `v_ch_join_dt` 등의 컬럼은 `timestamp` 타입으로 변환한다.
+    *   `is_profile_created`, `is_profile_private`, `is_official` 등의 컬럼은 `bigint` 타입으로 변환한다.
+    *   `artist_cheering_me_push_enabled`, `artist_comment_push_enabled` 등의 컬럼은 `tinyint` 타입으로 변환한다.
+    *   `comm_id` 컬럼은 `bigint` 타입으로 변환한다.
+    *   `art_indi_id` 컬럼은 `string` 타입으로 변환한다.
+    *   `is_fc` 컬럼은 멤버십 여부를 나타내는 `int` 타입으로 변환한다.
+    *   `part_comm_id` 컬럼은 `bigint` 타입으로 변환한다.
+    *   `part_date` 컬럼은 `string` 타입으로 변환한다.
+3.  **데이터 통합**:
+    *   위의 소스 테이블들을 `wv_user_id`, `comm_id`, `we_art_id` 등을 기준으로 조인한다.
+    *   `comm_user_first_dt` 컬럼은 `wv1_join_info` 테이블의 `comm_user_first_dt` 컬럼을 우선적으로 사용하고, 없으면 `ods_wv_member_profile` 테이블의 `comm_user_first_dt` 컬럼을 사용한다.
+    *   `tot_comm_user_first_dt` 컬럼은 `wv1_join_info` 테이블의 `tot_comm_user_first_dt` 컬럼을 우선적으로 사용하고, 없으면 `ods_wv_member_profile` 테이블의 `tot_comm_user_first_dt` 컬럼을 사용한다.
+    *   `is_first_user_comm` 컬럼은 `wv1_join_info` 테이블의 `is_first_user_comm` 컬럼을 우선적으로 사용하고, 없으면 `ods_wv_member_profile` 테이블의 `comm_user_first_dt`와 `tot_comm_user_first_dt` 컬럼을 비교하여 결정한다.
+    *   `notification_type`, `like_on_comment_alarm`, `hot_post_alarm`, `new_fc_alarm`, `new_media_alarm`, `new_community_notice_alarm`, `artist_to_fans_post_alarm`, `artist_post_alarm`, `artist_like_on_my_post_alarm`, `artist_comment_on_my_post_alarm`, `like_on_my_post_alarm`, `comment_on_my_post_alarm`, `after_receiving_artist_comment_alarm` 컬럼은 `wv1_join_info` 테이블에서 가져온다.
+    *   `artist_cheering_me_push_enabled`, `artist_comment_push_enabled`, `artist_live_on_air_push_enabled`, `artist_live_reservation_push_enabled`, `artist_moment_push_enabled`, `artist_post_push_enabled`, `comment_push_enabled`, `community_anniversary_push_enabled`, `community_media_push_enabled`, `community_notice_push_enabled`, `following_push_enabled` 컬럼은 `notification_push_config` 테이블에서 가져온다.
+4.  **최종 테이블 생성**:
+    *   위에서 통합된 데이터를 `we_mart.wv_comm_user` 테이블에 저장한다.
+    *   `part_comm_id`와 `part_date` 컬럼을 파티션 키로 사용한다.
 
 ### 테이블 활용 가이드
 
-* **주요 활용**:
-    * 위버스 커뮤니티 회원 분석 및 마케팅 활동에 활용
-    * 회원의 가입 시점, 활동 상태, 알림 설정 정보 등을 분석하여 회원의 행동 패턴 파악
-    * 회원의 멤버십, 공식 계정 여부, V 채널 가입 정보 등을 활용하여 다양한 분석 수행
-* **조인 시 유의사항**:
-    * `we_mart.we_user` 테이블과 `wv_user_id` 컬럼을 통해 조인하여 추가적인 회원 정보를 얻을 수 있음
-    * `we_mart.we_artist` 테이블과 `we_art_id` 컬럼을 통해 조인하여 아티스트 정보를 얻을 수 있음
-    * `we_mart.ws_fc_user_history` 테이블과 `we_member_id` 컬럼을 통해 조인하여 멤버십 정보를 얻을 수 있음
+*   **주요 활용**:
+    *   위버스 커뮤니티 회원 이력 분석, 멤버십 분석, 아티스트 멤버 분석, 알림 설정 분석, V채널 가입 분석 등에 활용할 수 있다.
+*   **조인 시 유의사항**:
+    *   `we_art_id` 컬럼을 사용하여 `we_mart.we_artist` 테이블과 조인하여 아티스트 정보를 추가할 수 있다.
+    *   `wv_user_id` 컬럼을 사용하여 `we_mart.we_user` 테이블과 조인하여 회원 정보를 추가할 수 있다.
+    *   `we_member_id` 컬럼을 사용하여 `we_mart.ws_fc_user_history` 테이블과 조인하여 멤버십 정보를 추가할 수 있다.
+    *   `comm_id` 컬럼을 사용하여 `we_meta.wv_clog_page` 테이블과 조인하여 커뮤니티 정보를 추가할 수 있다.
 
 ### 추가 정보
 
-* `we_mart.wv_comm_user` 테이블은 `we_mart.wv1_join_info` 테이블에서 마이그레이션된 데이터를 포함
-* `we_mart.wv1_join_info` 테이블은 위버스 커뮤니티 가입 정보를 담고 있음
-* `we_mart.wv_comm_user` 테이블은 `part_comm_id`, `part_date` 컬럼을 통해 파티션 되어 있음
-* `run_timestamp` 컬럼은 데이터 처리 시점을 나타냄  
+*   `comm_user_id` 컬럼은 `comm_id`와 `wv_user_id`를 조합하여 만든 컬럼이다.
+*   `cnt_comm_user_id` 컬럼은 해당 날짜에 가입한 `comm_user_id` 수를 나타낸다.
+*   `sum_report_count` 컬럼은 해당 날짜에 신고된 횟수를 나타낸다.
+*   `comm_user_seq` 컬럼은 커뮤니티 회원 시퀀스를 나타낸다.
+*   `run_timestamp` 컬럼은 데이터 처리 시점을 나타낸다.
+*   `is_first_user_comm` 컬럼은 `comm_user_first_dt`와 `tot_comm_user_first_dt` 컬럼을 비교하여 결정한다.
+*   `art_indi_id`, `art_indi_type`, `art_indi_name` 컬럼은 `community_member_special_member` 테이블의 `special_member_type` 컬럼이 `ARTIST` 또는 `OTHER_COMMUNITY_ARTIST`인 경우에만 값을 가지고, 그 외에는 null 값을 가진다.
+*   `profile_name` 컬럼은 `ods_wv_member_profile` 테이블의 `profile_name` 컬럼에서 가져오며, 특별 회원의 경우에는 `community_member_special_member` 테이블의 `art_indi_name` 컬럼에서 가져온다.  
 ---
 # COLUMN INFO
 
@@ -191,98 +201,72 @@ we_mart.wv_comm_user
 # HOW TO USE
   
 ### Downstream Table/View
-- 커뮤니티별 최초 가입 유저 수와 멤버십 유저 수를 파악하는 테이블 생성
+- 커뮤니티 가입 유저의 최근 국가 정보를 추가하는 테이블 생성
     - ```sql
-    create or replace table we_mart.stats_wv_d_comm_user_cnt
-    (
-    key_date date comment '기준일자'
-    , we_art_id int comment '아티스트 id'
-    , we_art_name string comment '아티스트 name'
-    , tot_user_cnt bigint comment '커뮤니티 총 유저 수'
-    , fc_user_cnt bigint comment '멤버십 유저 수'
-    , run_timestamp timestamp comment '적재시간'
-    )
-    using delta
-    partitioned by (key_date)
-    comment '커뮤니티별 최초 가입 유저 수와 멤버십 유저 수 집계'
-    ;
-
-    -- 최초 가입 유저 수와 멤버십 유저 수를 계산하고 파티션 키를 key_date로 설정
-    insert overwrite table we_mart.stats_wv_d_comm_user_cnt partition(key_date)
-    select 
-    date(a.part_date) as key_date
-    , a.we_art_id
-    , a.we_art_name
-    , count(distinct a.wv_user_id) as tot_user_cnt
-    , count(distinct case when a.is_fc = 1 then a.wv_user_id end) as fc_user_cnt
-    , current_timestamp() as run_timestamp
-    from wev_prod.we_mart.wv_comm_user a
-    group by 1,2,3
-    ;
-    ```
-- 최초 가입일 기준으로 유저를 그룹화하여 각 그룹의 멤버십 유저 비율을 계산하는 테이블 생성
+      create or replace table we_mart.wv_comm_user_ctry_update as
+      select 
+        wv_user_id,
+        comm_id,
+        last(ip_ctry) over (partition by wv_user_id, comm_id order by part_date) as ip_ctry
+      from we_mart.wv_comm_user
+      where part_date = '2024-01-01'
+      ;
+      ```
+- 최근 1년 동안 커뮤니티 가입 이력이 있는 유저의 정보를 추출하는 테이블 생성
     - ```sql
-    create or replace table we_mart.stats_wv_t_comm_user_cohort
-    (
-    cohort string comment '코호트 그룹'
-    , we_art_id int comment '아티스트 id'
-    , we_art_name string comment '아티스트 name'
-    , tot_user_cnt bigint comment '코호트 그룹 총 유저 수'
-    , fc_user_cnt bigint comment '코호트 그룹 멤버십 유저 수'
-    , fc_ratio double comment '멤버십 유저 비율'
-    , run_timestamp timestamp comment '적재시간'
-    )
-    using delta
-    comment '커뮤니티 최초 가입일 기준 코호트 그룹별 멤버십 유저 비율 집계'
-    ;
-
-    -- 최초 가입일 기준 코호트 그룹을 생성하고 멤버십 유저 비율을 계산
-    insert overwrite table we_mart.stats_wv_t_comm_user_cohort
-    select
-    concat(year(comm_user_first_dt), '/', quarter(comm_user_first_dt), 'Q') as cohort
-    , we_art_id
-    , we_art_name
-    , count(distinct wv_user_id) as tot_user_cnt
-    , count(distinct case when is_fc = 1 then wv_user_id end) as fc_user_cnt
-    , round(count(distinct case when is_fc = 1 then wv_user_id end) * 1.0 / count(distinct wv_user_id), 4) as fc_ratio
-    , current_timestamp() as run_timestamp
-    from wev_prod.we_mart.wv_comm_user
-    group by 1, 2, 3
-    ;
-    ```
+      create or replace table we_mart.wv_comm_user_recent_join as
+      select 
+        wv_user_id,
+        comm_id,
+        min(comm_user_first_dt) over (partition by wv_user_id, comm_id) as comm_user_first_dt,
+        max(comm_user_cre_dt) over (partition by wv_user_id, comm_id) as comm_user_cre_dt
+      from we_mart.wv_comm_user
+      where part_date between date('2024-01-01') and date('2024-01-01') + interval '1' year
+      ;
+      ```
+- 커뮤니티 가입 유저의 최근 멤버십 정보를 추가하는 테이블 생성
+    - ```sql
+      create or replace table we_mart.wv_comm_user_fc_update as
+      select 
+        wv_user_id,
+        comm_id,
+        last(is_fc) over (partition by wv_user_id, comm_id order by part_date) as is_fc,
+        last(fc_id) over (partition by wv_user_id, comm_id order by part_date) as fc_id
+      from we_mart.wv_comm_user
+      where part_date = '2024-01-01'
+      ;
+      ```
 
 ### Data Extraction
-- 특정 날짜의 커뮤니티 가입 유저 중 멤버십 유저 비율을 계산
+- 최근 3개월 동안 커뮤니티에 가입한 유저 수를 추출 (단, "ARTIST" 커뮤니티만)
     - ```sql
-    select
-    count(distinct case when is_fc = 1 then wv_user_id end) * 1.0 / count(distinct wv_user_id) as fc_ratio
-    from wev_prod.we_mart.wv_comm_user
-    where part_date = '2024-01-01'
-    and comm_user_status = 'NORMAL'
-    and wv_user_status = 'NORMAL'
-    ;
-    ```
-- 특정 아티스트의 커뮤니티에서 특정 기간 동안 멤버십을 유지한 유저 수를 계산
+      select 
+        count(distinct wv_user_id) as cnt_user
+      from we_mart.wv_comm_user
+      where part_date between date('2024-01-01') and date('2024-01-01') + interval '3' month
+        and we_art_id = 1 -- "ARTIST" 커뮤니티 ID
+      ;
+      ```
+- 특정 날짜에 "ARTIST" 커뮤니티에 가입한 유저 중 멤버십이 있는 유저 수를 추출
     - ```sql
-    select count(distinct we_member_id) as fc_user_cnt
-    from wev_prod.we_mart.wv_comm_user
-    where we_art_id = 1
-    and part_date between '2024-01-01' and '2024-01-31'
-    and is_fc = 1
-    and comm_user_status = 'NORMAL'
-    and wv_user_status = 'NORMAL'
-    ;
-    ```
-- 특정 기간 동안 특정 국가에서 커뮤니티에 가입한 유저 수를 계산
+      select 
+        count(distinct wv_user_id) as cnt_user_with_fc
+      from we_mart.wv_comm_user
+      where part_date = '2024-01-01'
+        and we_art_id = 1 -- "ARTIST" 커뮤니티 ID
+        and is_fc = 1
+      ;
+      ```
+- 특정 날짜에 "ARTIST" 커뮤니티에 가입한 유저 중 프로필 이미지를 업로드한 유저 수를 추출
     - ```sql
-    select count(distinct wv_user_id) as user_cnt
-    from wev_prod.we_mart.wv_comm_user
-    where part_date between '2024-01-01' and '2024-01-31'
-    and ip_ctry = 'KR'
-    and comm_user_status = 'NORMAL'
-    and wv_user_status = 'NORMAL'
-    ;
-    ```  
+      select 
+        count(distinct wv_user_id) as cnt_user_with_profile_img
+      from we_mart.wv_comm_user
+      where part_date = '2024-01-01'
+        and we_art_id = 1 -- "ARTIST" 커뮤니티 ID
+        and is_upload_profile_img = 1
+      ;
+      ```  
 ---
 # PIPELINE INFO
 
@@ -330,61 +314,5 @@ we_mart.wv_comm_user
 
 ## 🐤 Downstream Tables Info
   
-`
-### Downstream Tables
-- **wv_comm_user_update** : 커뮤니티 회원 정보를 최신 상태로 유지하는 테이블. `wv_comm_user` 테이블을 사용하여 매일 업데이트하며, 회원 가입, 탈퇴, 재가입 등의 상태 변화를 추적.
-    - `wv_comm_user` 테이블의 데이터를 사용하여 회원 정보를 업데이트하고, 각 회원의 최신 상태를 반영.
-    - 회원 정보를 기반으로 탈퇴 유저 분석, 가입 유저 분석 등 다양한 분석을 수행할 수 있음.
-    - `wv_user_id`와 `comm_id`를 파티션 키로 사용.
-    - 특정 날짜의 회원 정보를 가져오려면 `part_date` 파티션을 사용하여 데이터를 필터링.
-    ```python
-    # 특정 날짜의 회원 정보 가져오기
-    df = spark.sql(f"select * from we_mart.wv_comm_user_update where part_date = '{target_date}'")
-    ```
-- **stats_wv_m_comm_engage_usr** : 월별 커뮤니티 적극 활동 유저 수 통계 테이블. `wv_comm_user` 테이블을 사용하여 월별 회원 정보를 기반으로 적극 활동 유저 수를 계산.
-    - `wv_comm_user` 테이블의 `we_member_id`와 `we_art_id`를 사용하여 해당 월에 커뮤니티에 가입한 유저를 식별.
-    - `wv_post_view`와 `wv_post_reaction` 테이블을 사용하여 포스트 조회, 댓글, 좋아요 등의 활동을 분석.
-    - 해당 월에 커뮤니티에 가입한 유저 중, 특정 기준 이상으로 활동한 유저를 적극 활동 유저로 정의.
-    - `key_date`를 파티션 키로 사용.
-    - 특정 월의 적극 활동 유저 수를 확인하려면 `key_date` 파티션을 사용하여 데이터를 필터링.
-    ```python
-    # 특정 월의 적극 활동 유저 수 가져오기
-    df = spark.sql(f"select * from we_mart.stats_wv_m_comm_engage_usr where key_date = '{target_date}'")
-    ```
-- **stats_wv_w_comm_engage_usr** : 주별 커뮤니티 적극 활동 유저 수 통계 테이블. `wv_comm_user` 테이블을 사용하여 주별 회원 정보를 기반으로 적극 활동 유저 수를 계산.
-    - `wv_comm_user` 테이블의 `we_member_id`와 `we_art_id`를 사용하여 해당 주에 커뮤니티에 가입한 유저를 식별.
-    - `wv_post_view`와 `wv_post_reaction` 테이블을 사용하여 포스트 조회, 댓글, 좋아요 등의 활동을 분석.
-    - 해당 주에 커뮤니티에 가입한 유저 중, 특정 기준 이상으로 활동한 유저를 적극 활동 유저로 정의.
-    - `key_date`를 파티션 키로 사용.
-    - 특정 주의 적극 활동 유저 수를 확인하려면 `key_date` 파티션을 사용하여 데이터를 필터링.
-    ```python
-    # 특정 주의 적극 활동 유저 수 가져오기
-    df = spark.sql(f"select * from we_mart.stats_wv_w_comm_engage_usr where key_date = '{target_date}'")
-    ```
-- **stats_wv_d_comm_engage_usr** : 일별 커뮤니티 적극 활동 유저 수 통계 테이블. `wv_comm_user` 테이블을 사용하여 일별 회원 정보를 기반으로 적극 활동 유저 수를 계산.
-    - `wv_comm_user` 테이블의 `we_member_id`와 `we_art_id`를 사용하여 해당일에 커뮤니티에 가입한 유저를 식별.
-    - `wv_post_view`와 `wv_post_reaction` 테이블을 사용하여 포스트 조회, 댓글, 좋아요 등의 활동을 분석.
-    - 해당일에 커뮤니티에 가입한 유저 중, 특정 기준 이상으로 활동한 유저를 적극 활동 유저로 정의.
-    - `key_date`를 파티션 키로 사용.
-    - 특정 일의 적극 활동 유저 수를 확인하려면 `key_date` 파티션을 사용하여 데이터를 필터링.
-    ```python
-    # 특정 일의 적극 활동 유저 수 가져오기
-    df = spark.sql(f"select * from we_mart.stats_wv_d_comm_engage_usr where key_date = '{target_date}'")
-    ```
-- **wv_dm_subscr** : WDM 구독 현황 테이블. `wv_comm_user` 테이블을 사용하여 WDM 구독 정보와 커뮤니티 회원 정보를 연결.
-    - `wv_comm_user` 테이블의 `wv_user_id`와 `comm_id`를 사용하여 WDM 구독 정보와 커뮤니티 회원 정보를 매칭.
-    - WDM 구독 정보를 기반으로 커뮤니티 회원의 구독 현황을 분석.
-    - `part_date`를 파티션 키로 사용.
-    - 특정 날짜의 WDM 구독 현황을 확인하려면 `part_date` 파티션을 사용하여 데이터를 필터링.
-    ```python
-    # 특정 날짜의 WDM 구독 현황 가져오기
-    df = spark.sql(f"select * from we_mart.wv_dm_subscr where part_date = '{target_date}'")
-    ```
-
-### Downstream View Tables
-- **[View table name 1]** : [Brief description of the view table]
-    - [view table infomations]
-- **[View table name 2]** : [Brief description of the view table]
-    - [view table infomations]
-- ...  
+#  
 ---

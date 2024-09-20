@@ -2,28 +2,46 @@ import streamlit as st
 from streamlit_ace import st_ace, KEYBINDINGS, LANGUAGES, THEMES
 from specification_builder import SpecificationBuilder
 import os
-## https://discuss.streamlit.io/t/web-markdown-editor/64329
+import warnings
+warnings.filterwarnings("ignore")
+
+def init_target_table():
+    return os.listdir("./data/specs_prod")[0].split(".")[0]
+
+def init_sb():
+    return SpecificationBuilder(st.session_state.target_table)
+
+# st.session_state.target_table을 초기화합니다.
+if "target_table" not in st.session_state:
+    st.session_state.target_table = init_target_table()
+if 'previous_target_table' not in st.session_state:
+    st.session_state.previous_target_table = st.session_state.target_table
+if "sb" not in st.session_state:
+    st.session_state.sb = init_sb()
+if 'martdown_text' not in st.session_state:
+    st.session_state.martdown_text = "NULL"
 
 @st.dialog("Save Markdown file as")
 def save_cur_state(markdown_code, file_name):
     st.write(f"Current File name: {file_name}")
     if st.button("Save"):
-        with open(f"data/specs/{file_name}", "w", encoding='utf-8') as f:
+        with open(f"./data/specs_prod/{file_name}", "w", encoding='utf-8') as f:
             cleaned_content = '\n'.join(line.rstrip() for line in markdown_code.splitlines())
             file = f.write(cleaned_content)
             st.write("Saved")
-def regen_all(sb, file_name):
-    sb.collect_static_data()
-    sb.generate_semantic_data("TABLE_NOTICE")
-    sb.generate_semantic_data("HOW_TO_USE")
-    sb.generate_semantic_data("DOWNSTREAM_TABLE_INFO")
-    sb.build_mdfile()
+
+def regen_all(file_name): 
+    st.session_state.sb.collect_static_data()
+    st.session_state.sb.generate_semantic_data("TABLE_NOTICE")
+    st.session_state.sb.generate_semantic_data("HOW_TO_USE")
+    st.session_state.sb.generate_semantic_data("DOWNSTREAM_TABLE_INFO")
+    st.session_state.sb.build_mdfile()
     return True
 
-def regen_component(sb, file_name, component_name):
-    sb.read_mdfile()
-    sb.generate_semantic_data(component_name)
-    sb.build_mdfile()
+def regen_component(file_name, component_name):
+    st.session_state.sb.read_mdfile()
+    st.session_state.sb.generate_semantic_data(component_name)
+    st.session_state.sb.build_mdfile()
     return True
 st.set_page_config(page_title="테이블 명세서 편집기", layout="wide", page_icon="💡")
 markdown_garammar = """
@@ -48,44 +66,70 @@ markdwon_table_example = """
     | 텍스트   | 텍스트   | 텍스트  |
     """ 
 
-try:
-    with open("template.md", "rb") as f:
+if "default_content" not in st.session_state:
+    with open("./data/spec_template.md", "rb") as f:
         file = f.read().decode('utf-8')
-        default_content = file
-except:
-    default_content = ""
+        st.session_state.default_content = file
 
 with st.sidebar:
     
-    filetree, setup_section, md_ref = st.tabs(["명세서 리스트", "편집기 세팅", "가이드"])
+    filetree, upload, setup_section, md_ref = st.tabs(["명세서 리스트", "업로드", "편집기 세팅", "가이드"])
     with filetree:
-        print(os.getcwd())
-        files = [f for f in os.listdir("./data/specs") if f.endswith(".md")]
+        st.subheader(":blue[명세서 리스트]", divider='grey')
         
-        st.subheader(":blue[확인 대기중인 명세서 리스트]", divider = 'grey')
-        target_table = st.radio(
-            label = '※ 파일 선택 후 raw code 확인',
-            options = files
-        )
+        # 선택 박스를 사용하여 queue 또는 prod 선택
+        list_type = st.selectbox("리스트 선택", ["작성 대기중", "작성 완료"])
+        
+        if list_type == "작성 대기중":
+            files = [f for f in os.listdir("./data/specs_queue") if f.endswith(".md")]
+            folder = "./data/specs_queue"
+        else:  # "작성 완료"
+            files = [f for f in os.listdir("./data/specs_prod") if f.endswith(".md")]
+            folder = "./data/specs_prod"
+        
+        if files:
+            st.session_state.target_table = st.radio(
+                label='※ 파일 선택 후 raw code 확인',
+                options=files,
+                key=f'{list_type}_radio'
+            )
+        else:
+            st.write("해당 폴더에 파일이 없습니다.")
+            st.session_state.target_table = None
+
+        if st.session_state.target_table and st.session_state.target_table != st.session_state.get('previous_target_table'):
+            st.session_state.sb = SpecificationBuilder(st.session_state.target_table.split(".")[0])
+            print("SpecificationBuilder reinitialized")
+            st.session_state.sb.read_mdfile()
+            st.session_state.previous_target_table = st.session_state.target_table
+            with open(f"./data/specs_queue/{st.session_state.target_table}", "rb") as f:
+                file = f.read().decode('utf-8')
+            st.session_state.default_content = file
+        else:
+            print(st.session_state.get('target_table'), st.session_state.get('previous_target_table'))
+
+
+
         st.subheader(":blue[재생성 하기]", divider = 'grey')
-        sb = SpecificationBuilder(target_table.split(".")[0])
-        sb.read_mdfile()
         if st.button("🎲 전체 파일 재생성"):
-            regen_all(sb, target_table)
+            regen_all(st.session_state.target_table)
         if st.button("🎲 TABLE NOTICE 재생성"):
-            regen_component(sb, target_table, "TABLE_NOTICE")
+            regen_component(st.session_state.target_table, "TABLE_NOTICE")
         if st.button("🎲 HOW TO USE 재생성"):
-            regen_component(sb, target_table, "HOW_TO_USE")
+            regen_component(st.session_state.target_table, "HOW_TO_USE")
         if st.button("🎲 DOWNSTREAM TABLE INFO 재생성"):
-            regen_component(sb, target_table, "DOWNSTREAM_TABLE_INFO")
-        with open(f"data/specs/{target_table}", "rb") as f:
-            file = f.read().decode('utf-8')
-        default_content = file
+            regen_component(st.session_state.target_table, "DOWNSTREAM_TABLE_INFO")
+        
         
         on = st.toggle(label = 'See the raw code')
         if on:
-            st.code(default_content, language="markdown")
-        
+            st.code(st.session_state.default_content, language="markdown")
+    
+    with upload:
+        st.subheader(f":blue[현재 파일: {st.session_state.sb.TARGET_TABLE}]", divider='grey')
+        if st.button("Save Current State"):
+            save_cur_state(markdown_code=st.session_state.markdown_text, file_name = st.session_state.target_table)
+
     with setup_section:
         st.subheader(":blue[편집기 파라미터 세팅]", divider = 'grey')
         theme = st.selectbox("Theme", options=THEMES, index=35)
@@ -183,8 +227,8 @@ st.markdown(
 with c1:
     st.header(":blue[Markdown Editor]", divider="gray")
     
-    markdown_text = st_ace(
-        value=default_content,
+    st.session_state.default_content = st_ace(
+        value=st.session_state.default_content,
         placeholder="명세서 입력",
         language="markdown",
         theme=theme,
@@ -199,8 +243,7 @@ with c1:
         key="ace",
     )
     
-    if st.button("Save Current State"):
-        save_cur_state(markdown_code=markdown_text, file_name = target_table)
+    
     
 
 
@@ -210,4 +253,4 @@ with c2:
 # 오른쪽 열을 사용하여 마크다운 텍스트의 렌더링 효과 표시
 with c3:
     st.header(":blue[Preview]", divider="gray")
-    st.markdown(markdown_text, unsafe_allow_html=True)
+    st.markdown(st.session_state.default_content, unsafe_allow_html=True)

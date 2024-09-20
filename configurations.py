@@ -6,11 +6,11 @@ import json
 
 ROOT_DIR = "/Users/lymansong/Documents/GitHub"
 KEY_DIR = "/Users/lymansong/Documents/GitHub/keys"
-BASE_DIR = "/Users/lymansong/Documents/GitHub/gedi_dev"
+BASE_DIR = "/Users/lymansong/Documents/GitHub/data_curation_dev"
 DATA_DIR = os.path.join(BASE_DIR, 'data')
-REQ_DIR = os.path.join(DATA_DIR, 'requests_extraction')
-SPEC_DIR = os.path.join(DATA_DIR, "specs")
-SOURCECODE_DIR = os.path.join(DATA_DIR, "source_codes")
+REQ_DIR = os.path.join(DATA_DIR, 'request_extraction')
+SPEC_DIR = os.path.join(DATA_DIR, "specs_queue")
+SOURCECODE_DIR = os.path.join(DATA_DIR, "table_source_codes")
 
 REPO_DIR = '/Users/lymansong/Documents/GitHub/databricks'
 DAG_DIR = "dags/utils/dynamic_dag/wev/task_list"

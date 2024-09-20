@@ -1,4 +1,3 @@
-
 we_mart.wv_order
 ================
 
@@ -13,7 +12,7 @@ we_mart.wv_order
 |**Created By**|박상민|
 |**Last Updated By**|송재영|
 |**Collaborators**|송재영[70], 이현지[5], 구민서[1], 박상민[1]|
-  
+
 #### Change History
 |**Date**|**By**|**LINK**|
 | :--- | :--- | :--- |
@@ -94,80 +93,70 @@ we_mart.wv_order
 |2024-07-02|송재영|[PR](https://github.com/benxcorp/databricks/commit/21da1795061451c1397d4b388a87e68712a3483e)|
 |2024-07-23|송재영|[PR](https://github.com/benxcorp/databricks/commit/6d83b7ce51c92f350ecb13622669d5a80dec15bb)|
 |2024-08-02|송재영|[PR](https://github.com/benxcorp/databricks/commit/c1838a3cd9ebe6c97eef2b39252df4ba4f644a5c)|
-  
-  
+
+
 # TABLE NOTICE
-  
+
 ### 테이블 개요
 
-* **테이블 목적**: 위버스 플랫폼에서 발생하는 유료 결제 현황을 나타내는 트랜잭션 데이터를 담고 있다.
-* **데이터 레벨**: transactional data
-* **파티션 키**: 없음
+* **테이블 목적**: 위버스 플랫폼에서 발생하는 유료 결제 현황 데이터를 집계하여 저장. 젤리, 인앱, 위버스샵 결제 데이터 통합.
+* **데이터 레벨**: TRANSACTIONAL DATA
+* **파티션 키**: `pay_dt`
 * **주요 키**: `transaction_id`
 
 ### 테이블 특징
 
-* `we_member_id`, `wv_user_id`, `ctry_code`를 이용하여 유저를 식별한다.
-* `is_pay`, `is_cx`, `is_partial_cx`, `is_cx_to_jelly_refund` 등의 컬럼을 통해 결제, 취소, 환불 여부를 나타낸다.
-* `product_type`, `product_id`, `we_art_id`, `we_art_name`, `product_name` 등의 컬럼을 이용하여 상품 정보를 식별한다.
-* `pay_system`, `pay_method`, `sale_id`, `sale_currency_code`, `sale_price` 등의 컬럼을 이용하여 결제 시스템, 결제 방식, 판매 정보를 나타낸다.
-* `paid_amt`, `paid_amt_krw`, `paid_amt_krw_inner`, `cx_amt`, `cx_amt_krw`, `cx_amt_krw_inner` 등의 컬럼을 이용하여 결제 금액, 원화 환산 금액, 환불 금액 정보를 나타낸다.
-* `seq_pay_completed`, `seq_all` 컬럼을 이용하여 유저별 결제 순서를 나타낸다.
-* `is_fc` 컬럼을 이용하여 유저의 팬클럽 가입 여부를 나타낸다.
+* 젤리, 인앱, 위버스샵 결제 데이터를 통합하여 사용자별 결제 내역을 한눈에 확인 가능.
+* `is_pay`, `is_cx`, `is_partial_cx`, `is_cx_to_jelly_refund` 컬럼을 통해 결제, 취소, 부분 환불, 젤리 환불 여부를 구분하여 분석 가능.
+* `seq_pay_completed`, `seq_all` 컬럼을 통해 유저별 결제 내역 순서를 파악하여 분석 가능.
+* `is_fc` 컬럼을 통해 팬클럽 가입 여부를 파악하여 분석 가능.
+* 젤리 구매 금액의 경우, `paid_amt_krw`, `paid_amt_krw_inner` 컬럼을 통해 내부 단가로 계산된 결제 금액을 확인 가능.
 
 ### 데이터 추출 및 생성 과정
 
-1.  **주요 데이터 소스**:
-    *   `billing.purchase`: 인앱 결제 정보
-    *   `weverseshop.order_sheet`: 위버스샵 주문 정보
-    *   `weverseshop.order_item`: 위버스샵 주문 상품 정보
-    *   `we_mart_wv1.wv_order_with_sale_id`: 위버스 1(Weverse Community) 결제 정보
-    *   `jelly.transaction`: 젤리 결제 정보
-    *   `jelly.order_item`: 젤리 주문 상품 정보
-    *   `we_meta.we_media_product`: 미디어 상품 정보
-    *   `we_meta.we_digital_product`: 디지털 상품 정보
-    *   `we_mart.we_user`: 위버스 유저 정보
-    *   `we_meta.currency_rate`: 환율 정보
-    *   `we_mart.ws_fc_user_history`: 팬클럽 가입 정보
-    *   `we_mart.wv_user_ctry_history`: 유저 국가 정보
-2.  **데이터 전처리**:
-    *   `billing.purchase` 테이블에서 `expire_at_ms != -1` 조건을 통해 유효한 인앱 결제 데이터만 추출
-    *   `billing.purchase` 테이블에서 `system in ('INAPP', 'WEVERSE_SHOP')` 조건을 통해 인앱 구매와 위버스샵 구매 데이터만 추출
-    *   `jelly.transaction` 테이블에서 `transaction_type in ('ORDER')` 조건을 통해 젤리 결제 데이터만 추출
-    *   `jelly.ledger` 테이블에서 `transaction_type in ('ORDER')` 조건을 통해 젤리 결제 내역 데이터만 추출
-    *   `jelly.ledger` 테이블에서 `transaction_type in ('WITHDRAW', 'PARTIAL_WITHDRAW')` 조건을 통해 젤리 환불 내역 데이터만 추출
-    *   `we_mart.ws_fc_user_history` 테이블에서 `is_cx_by_restore = 0` 조건을 통해 수기 복구로 취소된 멤버십은 제외
-    *   `we_mart.wv_user_ctry_history` 테이블에서 `user_id`, `member_id`, `created_at` 컬럼을 기준으로 중복 제거
-    *   `we_mart.wv_user_ctry_history` 테이블에서 `created_at` 컬럼을 기준으로 유저별 최신 국가 정보 추출
-    *   `we_meta.currency_rate` 테이블을 이용하여 환율 정보를 적용
-3.  **데이터 통합**:
-    *   인앱 구매, 위버스샵 구매, 젤리 구매 데이터를 `UNION ALL` 연산을 통해 통합
-    *   `we_mart.we_user` 테이블을 이용하여 유저 정보를 추가
-    *   `we_mart.we_artist` 테이블을 이용하여 아티스트 정보를 추가
-    *   `we_mart.ws_fc_user_history` 테이블을 이용하여 팬클럽 가입 정보를 추가
-    *   `we_mart.wv_user_ctry_history` 테이블을 이용하여 유저 국가 정보를 추가
-4.  **최종 테이블 생성**:
-    *   통합된 데이터를 `we_mart.wv_order` 테이블에 저장
+1. **주요 데이터 소스**:
+    * `we_mart_wv1.wv_order_with_sale_id`: 위버스 1.0 버전 유저 결제 데이터
+    * `inapp_orders_pre`: 인앱 구매 데이터
+    * `JELLY_ORDERS`: 젤리 구매 데이터
+    * `INAPP_SHOP_ORDERS`: 인앱 및 위버스샵 구매 데이터
+    * `we_meta.we_artist`: 아티스트 정보
+    * `we_meta.we_media_product`: 미디어 상품 정보
+    * `we_meta.we_digital_product`: 디지털 상품 정보
+    * `we_mart.we_user`: 위버스 유저 정보
+    * `we_mart.ws_fc_user_history`: 위버스샵 팬클럽 가입 정보
+    * `we_meta.currency_rate`: 환율 정보
+    * `CTRY`: 위버스 유저 국가 정보
+2. **데이터 전처리**:
+    * 각 데이터 소스에서 필요한 컬럼만 추출하여 전처리.
+    * 인앱 구매 데이터는 `inapp_orders_pre` 뷰를 통해 젤리 상품 제외 및 `pur_confirmed_dt` 컬럼 생성.
+    * 젤리 구매 데이터는 `JELLY_ORDERS` 뷰를 통해 `paid_amt_krw`, `paid_amt_krw_inner` 컬럼 생성.
+    * 젤리, 인앱, 위버스샵 구매 데이터를 `INAPP_SHOP_ORDERS` 뷰를 통해 통합.
+3. **데이터 통합**:
+    * `INAPP_SHOP_ORDERS` 뷰와 `JELLY_ORDERS` 뷰를 `ORDS` 뷰를 통해 통합.
+    * `CTRY`, `FC` 뷰를 조인하여 국가 정보 및 팬클럽 가입 정보를 추가.
+4. **최종 테이블 생성**:
+    * `ORDS` 뷰에서 필요한 컬럼을 추출하여 `we_mart.wv_order` 테이블 생성.
+    * `pay_dt` 컬럼을 파티션 키로 활용.
 
 ### 테이블 활용 가이드
 
 * **주요 활용**:
-    *   위버스 플랫폼의 전체 유료 결제 현황 분석
-    *   유저별, 상품별, 아티스트별, 국가별 결제 현황 분석
-    *   결제, 취소, 환불 패턴 분석
-    *   팬클럽 가입과 결제 현황의 상관관계 분석
+    * 위버스 플랫폼에서 발생하는 유료 결제 현황 분석
+    * 젤리, 인앱, 위버스샵 결제 데이터 통합 분석
+    * 유저별 결제 내역, 취소 내역, 환불 내역 분석
+    * 팬클럽 가입 여부와 결제 현황 분석
+    * 국가별 결제 현황 분석
 * **조인 시 유의사항**:
-    *   `we_member_id`, `wv_user_id`, `ctry_code` 컬럼을 이용하여 다른 테이블과 조인
-    *   `pay_dt`, `cx_dt`, `sale_start_dt`, `started_dt`, `ended_dt` 등의 컬럼을 이용하여 시간 기준으로 조인
-    *   `product_id`, `we_art_id` 등의 컬럼을 이용하여 상품, 아티스트 정보 기준으로 조인
-    *   `transaction_id`, `purchase_id` 등의 컬럼을 이용하여 결제 정보 기준으로 조인
+    * `we_member_id`, `wv_user_id`, `transaction_id`, `purchase_id`, `product_id`, `we_art_id`, `comm_id` 등의 컬럼을 사용하여 다른 테이블과 조인 가능.
+    * `pay_dt` 컬럼을 사용하여 시간 기반으로 다른 테이블과 조인 가능.
+    * `is_pay`, `is_cx`, `is_partial_cx`, `is_cx_to_jelly_refund`, `is_fc` 등의 컬럼을 사용하여 조건을 걸어 분석 가능.
 
 ### 추가 정보
 
-* `we_mart.wv_order` 테이블은 `we_meta.we_artist`, `we_mart.we_user`, `we_mart.ws_fc_user_history`, `we_mart.wv_user_ctry_history` 등의 테이블과 조인하여 유저, 아티스트, 팬클럽, 국가 정보 등을 추가하여 분석할 수 있다.
-* `paid_amt`, `paid_amt_krw`, `cx_amt`, `cx_amt_krw` 등의 컬럼을 이용하여 결제 금액, 환불 금액, 원화 환산 금액 등을 분석할 수 있다.
-* `seq_pay_completed`, `seq_all` 컬럼을 이용하여 유저별 결제 순서를 분석할 수 있다.
-* `is_fc` 컬럼을 이용하여 팬클럽 가입과 결제 현황의 상관관계를 분석할 수 있다.  
+* 젤리 구매 금액의 경우, `paid_amt_krw`, `paid_amt_krw_inner` 컬럼을 통해 내부 단가로 계산된 결제 금액을 확인 가능.
+* `run_timestamp` 컬럼을 통해 데이터 생성 시간 확인 가능.
+* `we_mart.wv_order` 테이블은 `pay_dt` 컬럼을 파티션 키로 활용하여 데이터 접근 및 처리 효율성을 높임.
+* 이 테이블은 `we_mart` 스키마에 저장됨.
 ---
 # COLUMN INFO
 
@@ -222,62 +211,137 @@ we_mart.wv_order
 |46|seq_pay_completed|int|유저별 구입 한(지불 완료) 상품 순서, 위버스샵 결제분 제외|
 |47|seq_all|int|유저별 상품 거래 내역의 전체 순서, 위버스샵 걸제분 제외|
 |48|run_timestamp|timestamp|데이터가 write된 날짜, 시간|
-  
-    
+
+
 ---
 # HOW TO USE
-  
+
 ### Downstream Table/View
-- `wv_order` 테이블을 사용하여 `we_art_id` 기준으로 `product_type` 별 `paid_amt` 집계 테이블 생성
+- `we_mart.wv_order` 테이블을 사용하여 `we_mart.stats_wv_d_svod_accum_users` 테이블을 생성하는 예시
     - ```sql
-      select we_art_id, product_type, sum(paid_amt) as total_paid_amt
-      from we_mart.wv_order
-      where part_date = '2024-01-01'
-      group by we_art_id, product_type
+      select
+      timestamp(current_timestamp() + interval '9' hour) as run_timestamp,
+      key_date,
+      a.we_art_id,
+      c.we_art_name,
+      nvl(product_name, 'TOTAL') as goods_name,
+      nvl(dur_type, 'TOTAL') as dur_type,
+      nvl(ctry_code, 'TOTAL') as ctry,
+      nvl(b.ctry_name, 'TOTAL') as ctry_name,
+      nvl(b.region_type, 'TOTAL') as region_type,
+      count(distinct wv_user_id) as active_users
+      from (
+        select distinct date(pay_dt) as key_date, we_art_id, product_name, dur_type, ctry_code, wv_user_id
+        from we_mart.wv_order
+        where pay_method != 'WEPLY'
+        and pay_system = 'INAPP'
+        and product_type = 'SVOD'
+      ) as a
+      left join we_mart.view_we_country as b
+      on a.ctry_code = b.ctry_code
+      left join we_mart.we_artist as c
+      on a.we_art_id = c.we_art_id
+      group by grouping sets(
+          (key_date, we_art_id, product_name, dur_type, ctry_code)
+         ,(key_date, we_art_id, ctry_code)
+         ,(key_date, we_art_id, product_name, dur_type)
+         ,(key_date, we_art_id)
+      )
+      order by key_date, we_art_id, goods_name, dur_type, ctry
       ```
-- `wv_order` 테이블을 사용하여 `wv_user_id` 기준으로 최초 결제일, 최근 결제일, 총 결제 횟수, 총 결제 금액을 집계하는 뷰 생성
+- `we_mart.wv_order` 테이블을 사용하여 `we_mart.stats_wv_d_user_purchase` 테이블을 생성하는 예시
     - ```sql
-      create or replace temp view user_purchase_summary as
-      select wv_user_id, min(pay_dt) as first_purchase_dt, max(pay_dt) as last_purchase_dt, count(distinct transaction_id) as total_purchase_count, sum(paid_amt) as total_paid_amount
-      from we_mart.wv_order
-      where part_date = '2024-01-01'
-      group by wv_user_id
+      select
+      timestamp(current_timestamp() + interval '9' hour) as run_timestamp,
+      key_date,
+      a.we_art_id,
+      c.we_art_name,
+      nvl(product_type, 'TOTAL') as product_type,
+      nvl(ctry_code, 'TOTAL') as ctry,
+      nvl(b.ctry_name, 'TOTAL') as ctry_name,
+      nvl(b.region_type, 'TOTAL') as region_type,
+      count(distinct wv_user_id) as active_users
+      from (
+        select distinct date(pay_dt) as key_date, we_art_id, product_type, ctry_code, wv_user_id
+        from we_mart.wv_order
+        where pay_method != 'WEPLY'
+        and pay_system = 'INAPP'
+      ) as a
+      left join we_mart.view_we_country as b
+      on a.ctry_code = b.ctry_code
+      left join we_mart.we_artist as c
+      on a.we_art_id = c.we_art_id
+      group by grouping sets(
+          (key_date, we_art_id, product_type, ctry_code)
+         ,(key_date, we_art_id, ctry_code)
+         ,(key_date, we_art_id, product_type)
+         ,(key_date, we_art_id)
+      )
+      order by key_date, we_art_id, product_type, ctry
       ```
-- `wv_order` 테이블을 사용하여 `we_art_id` 기준으로 `product_type` 별 `paid_amt` 집계 테이블 생성 (PySpark)
-    - ```py
-      from pyspark.sql.functions import sum
-      
-      # wv_order 테이블 읽어오기
-      wv_order_df = spark.table("we_mart.wv_order")
-      
-      # we_art_id, product_type 기준으로 paid_amt 합계 계산
-      aggregated_df = wv_order_df.groupBy("we_art_id", "product_type").agg(sum("paid_amt").alias("total_paid_amt"))
-      
-      # 집계 결과를 새로운 테이블에 저장
-      aggregated_df.write.mode("overwrite").partitionBy("we_art_id", "product_type").saveAsTable("we_mart.aggregated_wv_order")
+- `we_mart.wv_order` 테이블을 사용하여 `we_mart.stats_wv_d_product_sale` 테이블을 생성하는 예시
+    - ```sql
+      select
+      timestamp(current_timestamp() + interval '9' hour) as run_timestamp,
+      key_date,
+      a.we_art_id,
+      c.we_art_name,
+      product_id,
+      product_name,
+      product_type,
+      nvl(ctry_code, 'TOTAL') as ctry,
+      nvl(b.ctry_name, 'TOTAL') as ctry_name,
+      nvl(b.region_type, 'TOTAL') as region_type,
+      sum(ord_item_qty) as sale_qty,
+      sum(paid_amt_krw) as sale_amt_krw
+      from (
+        select distinct date(pay_dt) as key_date, we_art_id, product_id, product_name, product_type, ctry_code
+        from we_mart.wv_order
+        where pay_method != 'WEPLY'
+        and pay_system = 'INAPP'
+      ) as a
+      left join we_mart.view_we_country as b
+      on a.ctry_code = b.ctry_code
+      left join we_mart.we_artist as c
+      on a.we_art_id = c.we_art_id
+      group by grouping sets(
+          (key_date, we_art_id, product_id, product_name, product_type, ctry_code)
+         ,(key_date, we_art_id, product_id, product_name, product_type)
+         ,(key_date, we_art_id, ctry_code)
+         ,(key_date, we_art_id, product_id, product_name)
+         ,(key_date, we_art_id)
+      )
+      order by key_date, we_art_id, product_id, product_type, ctry
       ```
 
 ### Data Extraction
-- `ctry_code` 가 `KR` 이고 `product_type` 이 `VOD` 인 `wv_order` 데이터 추출
+- 특정 기간 동안 특정 아티스트의 특정 상품을 구매한 유저의 수를 추출하는 예시
     - ```sql
-      select *
+      select count(distinct wv_user_id)
       from we_mart.wv_order
-      where part_date = '2024-01-01' and ctry_code = 'KR' and product_type = 'VOD'
+      where pay_dt between '2024-01-01' and '2024-01-31'
+      and we_art_id = 1234
+      and product_name = 'ARTIST 상품'
       ```
-- `we_art_id` 가 `ARTIST` 이고 `pay_method` 가 `JELLY` 인 `wv_order` 데이터 중 `pay_dt` 기준으로 최근 100건 추출
+- 특정 기간 동안 특정 국가의 유저가 구매한 젤리의 총량을 추출하는 예시
     - ```sql
-      select *
+      select sum(paid_amt)
       from we_mart.wv_order
-      where part_date = '2024-01-01' and we_art_id = 'ARTIST' and pay_method = 'JELLY'
-      order by pay_dt desc
-      limit 100
+      where pay_dt between '2024-01-01' and '2024-01-31'
+      and ctry_code = 'KR'
+      and currency_code = 'JELLY'
       ```
-- `wv_order` 테이블에서 `product_type` 이 `SVOD` 이고 `is_fc` 가 1인 유저의 `wv_user_id` 추출
+- 특정 기간 동안 특정 아티스트의 상품을 구매한 유저 중, Fan Club 회원인 유저의 수를 추출하는 예시 (Fan Club 정보는 `we_mart.ws_fc_user_history` 테이블에서 가져옴)
     - ```sql
-      select distinct wv_user_id
-      from we_mart.wv_order
-      where part_date = '2024-01-01' and product_type = 'SVOD' and is_fc = 1
-      ```  
+      select count(distinct a.wv_user_id)
+      from we_mart.wv_order as a
+      inner join we_mart.ws_fc_user_history as b
+      on a.we_member_id = b.we_member_id
+      and a.we_art_id = b.we_art_id
+      and a.pay_dt between b.create_dt and b.expire_dt
+      where a.pay_dt between '2024-01-01' and '2024-01-31'
+      and a.we_art_id = 1234
+      ```
 ---
 # PIPELINE INFO
 
@@ -294,8 +358,8 @@ we_mart.wv_order
 ### Github: [Source Code](https://github.com/benxcorp/databricks/blob/main/src/data_analytics/mart/we_mart/wv_order.py)
 
 ### Airflow: [DAG](https://github.com/benxcorp/dp-airflow/blob/main/dags/utils/dynamic_dag/wev/task_list/analytics_we_mart_priority_daily.py)
-  
-    
+
+
 ---
 # DEPENDENCIES
 
@@ -324,6 +388,18 @@ we_mart.wv_order
 |weverseshop.order_sheet| |
 
 ## 🐤 Downstream Tables Info
-  
-   
+
+### Downstream Tables
+- **we_mart.we_order**: Weverse 플랫폼 통합 주문 현황
+    - we_mart.wv_order 테이블과 we_mart.ws_order를 기반으로 weverseshop, phoning, weverse 3개 서비스 주문 데이터를 통합하여 제공
+- **we_mart.wv_video_play**: 위버스 비디오 재생 클릭 데이터
+    - Weverse 서버 로그 데이터를 기반으로 위버스 비디오 재생 클릭 로그를 제공, we_mart.wv_order를 참고 하여 유료 미디어의 구매 정보를 가져옴
+- **we_mart.wv_vod_play**: 위버스 VOD, LIVE to VOD, Youtube 재생 서버로그 마트
+    - Weverse 서버 로그 데이터를 기반으로 위버스 VOD, LIVE to VOD, Youtube 재생 서버로그 마트를 제공
+- **we_mart.stats_wv_d_svod_accum_users**: 일간 SVOD 누적 유효 회원 수 현황
+    - we_mart.wv_order 테이블을 기반으로 일간 SVOD 누적 유효 회원 수 현황을 제공
+
+### Downstream View Tables
+- **[해당 target table을 활용하는 View table은 없음]**
+
 ---

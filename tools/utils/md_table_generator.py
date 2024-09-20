@@ -2,7 +2,7 @@
 import requests
 from typing import List, Dict, Tuple
 from notion_client import Client
-from parser_utils import *
+from tools.utils.parser_utils import *
 import pandas as pd
 from io import StringIO
 
