@@ -2,7 +2,7 @@
 **Data Table Curation** Module for **GE**nerative **D**ata **I**nsight(**GEDI**) Project
 
 ```Text
-DataCration
+data_curation_dev
 ├── data
 │   ├── requests_extraction
 │   │   ├── DATA-5001.json
