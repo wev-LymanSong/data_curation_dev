@@ -4,8 +4,8 @@ from configurations import *
 from markdown_it import MarkdownIt
 from mdutils.mdutils import MdUtils
 from itertools import zip_longest
-from gedi_wev.connectors.github_repo_connector import *
-from gedi_wev.connectors.databricks_connector import *
+from tools.connectors.github_repo_connector import *
+from tools.connectors.databricks_connector import *
  
 print(f"Current Directory: {os.getcwd()}")
 

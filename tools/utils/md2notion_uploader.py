@@ -4,8 +4,8 @@ import sys
 print(os.getcwd())
 from notion_client import Client
 from markdown_it import MarkdownIt
-from gedi_wev.utils.parser_utils import get_heading, get_text_block, get_divider_block 
-from gedi_wev.utils.table_generator import TableGenerator
+from parser_utils import get_heading, get_text_block, get_divider_block 
+from md_table_generator import MdTableGenerator
 import pandas as pd
 
 
@@ -23,7 +23,7 @@ class Md2NotionUploader(object):
     Attributes:
         notion_api_key (str): The Notion API key.
         notion (Client): An instance of the Notion client.
-        table_generator (TableGenerator): An instance of TableGenerator for handling table conversions.
+        table_generator (MdTableGenerator): An instance of MdTableGenerator for handling table conversions.
         headers (dict): HTTP headers for Notion API requests.
         md (MarkdownIt): An instance of MarkdownIt for parsing Markdown.
 
@@ -40,7 +40,7 @@ class Md2NotionUploader(object):
     def __init__(self, notion_api_key: str):
         self.notion_api_key = notion_api_key
         self.notion = Client(auth=self.notion_api_key)
-        self.table_generator = TableGenerator(notion_api_key=self.notion_api_key)
+        self.table_generator = MdTableGenerator(notion_api_key=self.notion_api_key)
         self.headers = {
             "Authorization": f"{self.notion_api_key}",
             "Content-Type": "application/json",

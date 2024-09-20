@@ -1,8 +1,7 @@
 import os
 import ast
-
-from gedi_wev.connectors.github_repo_connector import *
-from gedi_wev.connectors.databricks_connector import *
+from tools.connectors.github_repo_connector import *
+from tools.connectors.databricks_connector import *
 
 def error_to_none(func):
     def wrapper(*args, **kwargs):

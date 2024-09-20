@@ -1,9 +1,7 @@
-import os
-import re
-import requests
-import pandas as pd
-from datetime import datetime, timedelta
 from configurations import * 
+import requests
+from datetime import datetime, timedelta
+
 
 ## 각종 디렉토리 설정
 
@@ -112,68 +110,6 @@ class GithubConnector(object):
                     print(f"\tfile_name: {file['filename']}")
         
         return update_files
-    
-    @staticmethod
-    def get_formatted_blocks2(table_base_dir, table_name):
-        """
-        타겟 파일을 읽어서 포맷팅된 코드 블록들을 반환
-        Args:
-            table_base_dir (str): 타겟 파일이 있는 디렉토리
-            table_name (str): 타겟 파일 이름
-        Returns:
-            dict: 포맷팅된 코드 블록들
-
-        Description:
-            1. 로컬 디렉토리에서 타겟 파일 읽기
-            2. 코드 블록 포맷팅
-                - 코드 블록의 field들은 각각 cell_type, role, codes로 구성
-                - cell_type은 셀의 타입을 의미
-                - role은 셀의 역할을 의미
-                    - cell_type에 따라 역할이 달라짐
-                    - cell_type이 'py', 'sql'이라면 role은 'code'로 설정, 다만 dataflow를 위한 설정 코드블록은 'setting'으로 설정
-                    - cell_type이 'md'라면 role은 Basic Info 블록일 경우 'basic_info', 설명 블록일 경우 'description', 그냥 헤더일 경우 'just_heading'
-                - codes는 셀의 내용을 그대로 담고 있음
-        """
-
-        # 파일 읽기
-        with open(os.path.join(table_base_dir, table_name + ".py")) as file:
-            ls = file.readlines()
-            if ls[0] == '# Databricks notebook source\n': ## 데이터브릭스 타입의 노트북이라면(보통의 경우)
-                code = "".join(ls[1:])
-
-            code_blocks = dict()
-            for i, cell in enumerate(code.split(CELL_SEPARATOR_PY)):
-                if cell[:7] == '# MAGIC':
-                    start_idx = cell.index("%") + 1
-                    end_idx = cell.index("\n")
-                    cell_type = cell[start_idx:end_idx]
-                    codes = cell[end_idx + 1:].replace(MAGIC_KEYWORD, "")
-                else:
-                    cell_type = 'py'
-                    codes = cell
-
-                if cell_type == 'md':
-                    codes = "\n".join([line[1:] for line in codes.split("\n")])
-                    if "BASIC INFO" in codes.upper():
-                        role = "basic_info"
-                    elif re.fullmatch(HEADER_PATTERN, codes):
-                        role = "just_heading"
-                    else:
-                        role = "description"
-                elif cell_type == 'py':
-                    if any(code in codes for code in ['run_mode = dbutils.widgets.get("run_mode")', "use catalog"]):
-                        role = "setting"
-                    # elif all([l[0] if l[0] == "#" else None for l in codes.split("\n") if len(l) > 0]):
-                    #     role = "description"
-                    else:
-                        role = "code"
-                elif cell_type == 'sql':
-                    role = "code"
-                else:
-                    role = "etc"
-                code_blocks[i + 1] = (cell_type, role, codes)
-        
-        return code_blocks
 
     def get_file_change_history(self, file_path, verbose: bool = False) -> pd.DataFrame:
         """
@@ -337,8 +273,8 @@ class GithubConnector(object):
 
 
 ## test run - databricks
-gc = GithubConnector(github_token=os.environ['GITHUB_TOKEN'], repo_name= 'databricks', branch='main')
-upd_files = gc.get_update_files(since_date='2024-08-23', time_delta_dates=1, verbose=False)
+# gc = GithubConnector(github_token=os.environ['GITHUB_TOKEN'], repo_name= 'databricks', branch='main')
+# upd_files = gc.get_update_files(since_date='2024-08-23', time_delta_dates=1, verbose=False)
 
 
 # table_name = gc.parse_table_name_from_dir(upd_files[3])

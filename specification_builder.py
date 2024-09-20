@@ -1,7 +1,7 @@
 from configurations import *
 from static_data_collector import StaticDataCollector
 from semantic_info_generator import SemanticInfoGenerator
-from gedi_wev.utils.table_generator import TableGenerator
+from tools.utils.md_table_generator import MdTableGenerator
 from mdutils.mdutils import MdUtils
 from itertools import zip_longest
 from functools import wraps
@@ -259,10 +259,10 @@ class SpecificationBuilder(object):
         if current_section:
             sections[current_section] = '\n'.join(section_content).strip()
 
-        self.basic_info = TableGenerator.parse_markdown_table(sections['BASIC INFO'])
-        self.change_history = TableGenerator.parse_markdown_table(sections['Change History'])
+        self.basic_info = MdTableGenerator.parse_markdown_table(sections['BASIC INFO'])
+        self.change_history = MdTableGenerator.parse_markdown_table(sections['Change History'])
         self.table_notice = sections['TABLE NOTICE']
-        column_info = TableGenerator.parse_markdown_table(sections['COLUMN INFO'])
+        column_info = MdTableGenerator.parse_markdown_table(sections['COLUMN INFO'])
         rows = [[int(row[0])] + row[1:] for row in column_info[1]]
 
         for row in rows:
@@ -318,7 +318,7 @@ class SpecificationBuilder(object):
             self.locations = (keywords[0][1], [k[1] for k in keywords[1:]])
         else:
             self.locations = (keywords[0][1], [f"[{k[0]}]({k[1]})" for k in keywords[1:]])
-        self.dep_table_list = TableGenerator.parse_markdown_table(dep_table_list)
+        self.dep_table_list = MdTableGenerator.parse_markdown_table(dep_table_list)
         self.dep_down_table_info = dep_down_table_info
         
 sb = SpecificationBuilder("wv_comm_user")

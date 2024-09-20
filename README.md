@@ -1,8 +1,8 @@
 # DataCuration
 **Data Table Curation** Module for **GE**nerative **D**ata **I**nsight(**GEDI**) Project
 
-```Text
-data_curation_dev
+```
+data_curation
 ├── data
 │   ├── requests_extraction
 │   │   ├── DATA-5001.json
@@ -27,11 +27,11 @@ data_curation_dev
 │   │   ├── jira_connector.py
 │   │   └── notion_connector.py
 │   ├── dataset_generators
-│   │   └── request_dataset.py
+│   │   └── request_extraction_dataset.py
 │   └── utils
 │       ├── md2notion_uploader.py
+│       ├── md_table_generator.py
 │       ├── parser_utils.py
-│       ├── table_generator.py
 │       └── table_utils.py
 ├── configurations.py
 ├── editor_main.py

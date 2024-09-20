@@ -2,11 +2,11 @@
 import requests
 from typing import List, Dict, Tuple
 from notion_client import Client
-from gedi_wev.utils.parser_utils import *
+from parser_utils import *
 import pandas as pd
 from io import StringIO
 
-class TableGenerator(object):
+class MdTableGenerator(object):
     def __init__(self, notion_api_key:str):
         self.notion_api_key = notion_api_key
         self.notion = Client(auth=self.notion_api_key)
@@ -58,7 +58,7 @@ class TableGenerator(object):
         table_rows = []
         for i, r in df.iterrows():
             print(r)
-            row = TableGenerator.get_a_table_row([parse_content(c.strip()) for c in r.values])
+            row = MdTableGenerator.get_a_table_row([parse_content(c.strip()) for c in r.values])
             table_rows.append(row)
     
         table_obj = {
@@ -130,7 +130,7 @@ sample_table_2 = f"""
 | weverseshop.goods_translation    |                                  |        
 """
 
-# tg = TableGenerator(
+# tg = MdTableGenerator(
 #     notion_api_key="secret_jnUpyC7BqRV1CEF3LmeEJ2sQPSFqKuiWsWtdnV2KIER"
 # )
 

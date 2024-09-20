@@ -1,9 +1,9 @@
 from configurations import *
-from gedi_wev.utils import table_utils as tu
 from static_data_collector import StaticDataCollector
 from prompt_templates import *
-from gedi_wev.connectors.github_repo_connector import GithubConnector
-from gedi_wev.connectors.databricks_connector import DatabricksConnector, NOTEBOOK_PREFIX_PY, NOTEBOOK_PREFIX_SQL
+from tools.connectors.github_repo_connector import GithubConnector
+from tools.connectors.databricks_connector import DatabricksConnector, NOTEBOOK_PREFIX_PY, NOTEBOOK_PREFIX_SQL
+from tools.utils import table_utils as tu
 
 
 # from langchain_openai import ChatOpenAI, OpenAIEmbeddings
