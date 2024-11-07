@@ -1,0 +1,545 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.ws_ord
+2,md,,basic_info,"#### Basic Info
+* 상품판매 내역 데이터
+* MART PRIMARY
+* DAILY OVERWRITE
+* 기준월부터 2년치만 overwrite
+* WIKI[https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/2865463377/we+mart.ws+order]  
+
+
+###### history
+|date|contributor|comments|
+|----|----|----|
+|2021-11-29|데이터분석팀 이현지|create mart table|
+|2021-12-13|데이터분석팀 이현지|we_mart.we_id_mapping 추가 (we_member_id없는 경우 채우기 위해서)|
+|2022-01-03|데이터분석팀 박상민|ship_cost_type 컬럼 추가, fc join 수정 |
+|2022-03-24|데이터분석팀 이현지|is_cx 로직 변경 |
+|2022-03-31|데이터분석팀 이현지|goods_name source we_mart.ws_goods_stock에서 order_item으로 변경 |
+|2022-05-19|데이터분석팀 송재영|logistics_category 데이터 추가(logi_cat)|
+|2022-12-12|데이터분석팀 이현지|is_pay_waiting 추가|
+|2022-12-22|데이터분석팀 이현지|is_pay_waiting_exceed 추가|
+|2022-12-22|데이터분석팀 이현지|테이블 파티셔닝 및 소스변경|
+|2023-09-13|데이터분석팀 이현지|cx_dt 취소일자 추가 및 결제일시 기준(status_updated_at) 변경|
+|2023-09-21|데이터분석팀 이현지|pod관련 필드, bm_option 추가, order_item_id중복 인입 노티 추가|
+|2024-03-15|데이터분석팀 이현지|is_fc 멤버십 중복가입 가능으로 로직 대응|
+|2024-05-03|데이터분석팀 이현지|배송관련 항목 추가 ```deliv_express_code,	logistics_type,	shipping_postal_code,	delivery_status```|
+<!-- |updated|2021-10-12|데이터분석팀 이현지|memo|-->
+
+
+###### Source Tables
+* we_mart.ods_ws_order_item
+* we_mart.ods_ws_order_sheet
+* we_mart.ods_ws_payment_transaction
+* we_mart.ods_ws_shipping_group
+* we_mart.ods_ws_delivery_service
+* we_mart.ws_goods_stock
+* we_mart.we_id_mapping
+* we_meta.currency_rate
+* we_mart.ws_user_ctry_history"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,code,"spark.conf.set(""spark.sql.adaptive.forceOptimizeSkewedJoin"", ""true"")"
+6,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"")
+
+noti = {
+    'channel' : channel,
+    'token' : slack_token
+}
+
+option = {
+    'date' : key, 
+    'format':'delta',
+    'mode': 'overwrite',
+    'period': 'daily',
+    'noti' : True,
+    'delete' : True,
+    'delete_key' : 'part_month'
+}
+
+table = {
+    'database' : 'we_mart',
+    'table_name' : 'ws_order', 
+    'service' : 'weverseshop',
+    'partition' : ['part_month']
+}"
+7,md,,description,"#### MAIN QUERY
+* view table 생성 후, main query 실행"
+8,py,,code,"# CREATE CACHE TABLE
+##=================================
+def set_data_view(query, view_name):
+  spark.sql(query).createOrReplaceTempView(view_name)
+  spark.sql(f'cache table {view_name}')
+
+  return print('Success create cache table ' + view_name)
+
+order_item = f'''
+  select 
+  created_at
+  , updated_at
+  , delivery_completed_date
+  , order_sheet_id
+  , order_item_id
+  , sale_id
+  , goods_id
+  , goods_option_code
+  , sale_stock_id
+  , status
+  , quantity
+  , sale_price
+  , goods_name
+  , project_code
+  from we_mart.ods_ws_order_item
+  where part_date = '{key}'
+  and date(created_at) >= date(date_trunc('month', '{key}')) - interval 2 years
+'''
+
+cx_order_item = f'''
+    select * 
+    from (
+    select order_item_id, created_at, status, row_number() over(partition by order_item_id, status order by created_at) as seq
+    from wev_prod.weverseshop.order_item_history 
+    where status in ('PAYMENT_CANCELED', 'PAYMENT_FAILED', 'REFUND_COMPLETED', 'REFUND_RESOLVED', 'PAYMENT_CANCELD_WITH_INVISIBLE')
+    )
+    where seq = 1
+'''
+
+payment_transaction = f'''
+  select 
+  order_sheet_id
+  , payment_transaction_id
+  , payment_gateway
+  , payment_method
+  , card_type
+  , mobile_provider
+  , transaction_type
+  , status
+  , currency_code
+  , payment_price
+  , created_at
+  , updated_at
+  , status_updated_at
+  from
+  (
+    select a.* 
+    from we_mart.ods_ws_payment_transaction a
+    inner join order_item b on a.order_sheet_id = b.order_sheet_id
+  )
+  where 1=1
+  and   transaction_type = 'PAY'
+  and   status in ('COMPLETED', 'WAITING')
+  and   part_date = '{key}'
+'''
+
+user_ctry_history = '''
+  select distinct
+  user_id
+  , country
+  , ip
+  , date(created_at + interval 9 hour) as date_id
+  , date(nvl(lead(created_at + interval 9 hour) over (partition by user_id, member_id order by created_at), '2099-12-31 23:59:59')) as next_created_at 
+  , row_number() over(partition by user_id, date(created_at + interval 9 hour) order by created_at desc) as seq
+  from (select distinct * from we_mart.ws_user_ctry_history)
+'''
+
+currency_rate = '''
+  select distinct
+  currency_code
+  , currency_rate
+  , date_id
+  , next_date_id
+  from we_meta.currency_rate
+'''
+
+order_sheet = f'''
+  select
+  ODS.currency_code
+  , ODS.user_id
+  , ODS.shop
+  , ODS.order_sheet_id
+  , ODS.order_sheet_number
+  , ODS.shipping_group_id
+  , ODS.delivery_service_id
+  , ODS.parent_order_sheet_id
+  , ODS.operator_created_by
+  , ODS.currency_code
+  , ODS.device_type
+  , ODS.shipping_country_code
+  , ODS.shipping_cost
+  , ODS.shipping_administrative_area
+  , CTR.country
+  , CTR.ip
+  from 
+  (
+    select a.*
+    from we_mart.ods_ws_order_sheet a
+    inner join order_item b on a.order_sheet_id = b.order_sheet_id
+  ) as ODS
+  left join user_ctry_history as CTR on CTR.user_id = ODS.user_id and date(CTR.date_id) <= date(ODS.created_at) and date(ODS.created_at) < date(CTR.next_created_at) and CTR.seq = 1
+  where ODS.part_date = '{key}'
+'''
+
+fc_user_history = f'''
+  select
+  ord_sheet_num
+  , we_member_id
+  , we_art_id
+  , shop
+  , fc_id
+  , min(create_dt) as create_dt
+  , min(expire_dt) as expire_dt
+  from we_mart.ws_fc_user_history 
+  where 1=1
+  and is_cx_by_restore = 0 -- 수기 복구로 취소된 멤버십은 중복 집계 방지를 위해 제거
+  and ord_status not in ('PAYMENT_FAILED')
+  group by 1,2,3,4,5
+'''
+
+##=================================
+view_list = {
+               'order_item': order_item
+             , 'payment_transaction': payment_transaction
+             , 'user_ctry_history': user_ctry_history
+             , 'currency_rate': currency_rate
+             , 'order_sheet': order_sheet
+             , 'fc_user_history': fc_user_history
+             , 'cx_order_item': cx_order_item
+             }
+
+for name, query in view_list.items():
+  set_data_view(query, name)"
+9,py,,code,"# MAIN QUERY
+
+df = spark.sql(f'''
+select 
+timestamp(current_timestamp() + interval '9' hour)  as run_timestamp
+, ord_cre_dt                                        as ord_cre_dt
+, ord_upd_dt                                        as ord_upd_dt
+, pay_dt                                            as pay_dt
+, cx_dt                                             as cx_dt
+, delivery_completed_date                           as deliv_completed_dt
+, we_member_id                                      as we_member_id
+, user_id                                           as ws_user_id
+, is_fc                                             as is_fc
+, pay_seq                                           as pay_seq
+, pay_ok_seq                                        as pay_ok_seq
+, shop                                              as shop
+, order_sheet_id                                    as ord_sheet_id
+, order_sheet_number                                as ord_sheet_number
+, order_item_id                                     as ord_item_id
+, sale_id                                           as sale_id
+, sale_stock_id                                     as sale_stock_id
+, goods_id                                          as goods_id
+, goods_code                                        as goods_code
+, goods_option_id                                   as goods_option_id
+, goods_option_code                                 as goods_option_code
+, sap_code                                          as sap_code
+, project_code                                      as project_code
+, we_art_id                                         as we_art_id
+, goods_upr_cat_id                                  as goods_upr_cat_id
+, goods_lwr_cat_id                                  as goods_lwr_cat_id
+, shipping_group_id                                 as ship_group_id
+, delivery_service_id                               as deliv_service_id
+, we_art_name                                       as we_art_name
+, goods_upr_cat_name                                as goods_upr_cat_name
+, goods_lwr_cat_name                                as goods_lwr_cat_name
+, goods_cat                                         as goods_cat
+, logi_cat                                          as logi_cat
+, goods_name                                        as goods_name
+, goods_option_name                                 as goods_option_name
+, is_pay                                            as is_pay
+, is_pay_waiting                                    as is_pay_waiting
+, is_pay_waiting_exceed                             as is_pay_waiting_exceed
+, is_status_ok                                      as is_status_ok
+, is_cx                                             as is_cx
+, is_admin_ord                                      as is_admin_ord
+, is_exch_ord                                       as is_exch_ord
+, status                                            as ord_status
+, quantity                                          as ord_item_qty
+, ord_item_cx_qty                                   as ord_item_cx_qty
+, ord_item_amt                                      as ord_item_amt
+, ord_item_amt_krw                                  as ord_item_amt_krw
+, ord_item_cx_amt                                   as ord_item_cx_amt
+, ord_item_cx_amt_krw                               as ord_item_cx_amt_krw
+, sale_price                                        as sale_price
+, album_qty                                         as album_qty
+, currency_code                                     as currency_code
+, currency_rate                                     as currency_rate
+, device_type                                       as device_type
+, shipping_country_code                             as ship_ctry_code
+, shipping_administrative_area                      as ship_prov_area
+, ship_group_name                                   as ship_group_name
+, deliv_service_name                                as deliv_service_name
+, deliv_express_code                                as deliv_express_code
+, logistics_type                                    as logi_type
+, shipping_postal_code                              as ship_postal_code
+, delivery_status                                   as deliv_status
+, ship_cost_type                                    as ship_cost_type  
+, payment_gateway                                   as pay_gateway
+, payment_method                                    as pay_method
+, card_type                                         as pay_card_type
+, mobile_provider                                   as pay_mobile_provider
+, country                                           as ctry_code
+, ip                                                as ip
+, trade_co_name                                     as trade_co_name
+, bm_option                                         as bm_option
+, pod_option_sell_code                              as pod_option_sell_code
+, pod_template_code                                 as pod_template_code
+, part_month                                        as part_month
+from (
+      select distinct
+        M1.*
+      , M_GDS.goods_code
+      , M_GDS.goods_option_id
+      , M_GDS.sap_code
+      , M_GDS.we_art_id
+      , M_GDS.goods_upr_cat_id
+      , M_GDS.goods_lwr_cat_id
+      , M_GDS.we_art_name
+      , M_GDS.goods_upr_cat_name
+      , M_GDS.goods_lwr_cat_name
+      , M_GDS.goods_cat
+      , M_GDS.logi_cat
+      , M_GDS.goods_option_name
+      , M_GDS.album_qty
+      , M_GDS.trade_co_name
+      , M_GDS.pod_option_sell_code
+      , M_GDS.pod_template_code
+      , M_GDS.bm_option
+      , SHIP.name        as ship_group_name
+      , nvl(DSO.courier_code, DSO.service_code) as deliv_service_name
+      , ESO.code as deliv_express_code
+      , case   
+        when M_GDS.goods_cat in ('VOD', 'TVOD', 'LIVE_TICKET') or (M_GDS.goods_cat in ('MEMBERSHIP')  and M1.shipping_cost = 0  ) or SHIP.name in ('DIGITAL') then 'DIGITAL'
+        when M1.shop = 'GL' and (M1.shipping_country_code in ('KR')  or DSO.service_code in ('CJ_KR')) and M1.shipping_cost > 0 then 'KR_PAID'
+        when M1.shop = 'GL' and (M1.shipping_country_code in ('KR')  or DSO.service_code in ('CJ_KR')) and (M1.shipping_cost = 0 or M1.shipping_cost is null )  then 'KR_FREE'
+        when M1.shop = 'GL' and (M1.shipping_country_code not in ('KR') or DSO.service_code not in ('CJ_KR')) then 'GL' 
+        when M1.shop = 'US' then 'US'
+        when M1.shop = 'JP' then 'JP' end as ship_cost_type               
+      , M1.ord_item_amt * case when M1.currency_code = 'KRW' then 1 else M_CRC.currency_rate end as ord_item_amt_krw
+      , M1.ord_item_cx_amt * case when M1.currency_code = 'KRW' then 1 else M_CRC.currency_rate end as ord_item_cx_amt_krw
+      , case when M1.currency_code = 'KRW' then 1 else M_CRC.currency_rate end as currency_rate
+      , null as pay_seq -- 결제완료 순번 (마지막에 merge into)
+      , null as pay_ok_seq -- 결제완료 & 구매완료 순번 (마지막에 merge into)
+      , case when coalesce(FCU.we_member_id, FCU_JP.we_member_id, FCU_US.we_member_id) is not null then 1 else 0 end as is_fc -- 구매당시 멤버십상태 여부
+      , case when M1.is_pay = 1 and M1.is_cx = 1 then nvl(M1.cx_cre_dt, M1.ord_upd_dt) end as cx_dt
+      from (
+            select distinct
+            ODI.created_at as ord_cre_dt
+            , ODI.updated_at as ord_upd_dt
+            , ODI.delivery_completed_date
+            , PAY.status_updated_at as pay_dt
+            , CX.created_at as cx_cre_dt
+            , string(date(date_trunc('month', ODI.created_at))) as part_month
+            , case when USR.we_member_id is null then ID.we_member_id else USR.we_member_id end as we_member_id
+            , ODI.order_item_id
+            , ODI.sale_id
+            , ODI.goods_id
+            , ODI.goods_option_code
+            , ODI.sale_stock_id
+            , ODI.sale_price
+            , ODI.goods_name
+            , ODI.status
+            , ODI.project_code
+            , ODS.user_id
+            , ODS.shop
+            , ODS.order_sheet_id
+            , ODS.order_sheet_number
+            , ODS.shipping_group_id
+            , ODS.delivery_service_id
+            , ODS.currency_code
+            , ODS.device_type
+            , ODS.shipping_cost
+            , ODS.shipping_country_code            
+            , ODS.shipping_administrative_area
+            , ODS.country
+            , ODS.ip
+            , ODR.logistics_type
+            , ODR.shipping_postal_code
+            , ODR.delivery_status
+            , nvl(PAY.payment_gateway, PAYJP.payment_gateway) as payment_gateway
+            , nvl(PAY.payment_method, PAYJP.payment_method) as payment_method
+            , nvl(PAY.card_type, PAYJP.card_type) as card_type
+            , nvl(PAY.mobile_provider, PAYJP.mobile_provider) as mobile_provider
+            , case when PAY.transaction_type = 'PAY' and PAY.status = 'COMPLETED' then 1 else 0 end as is_pay -- 결제 여부 (1: 결제, 0: 미결제)
+            , case when PAYJP.transaction_type = 'PAY' and PAYJP.status = 'WAITING' then 1 else 0 end as is_pay_waiting -- 결제 여부 (1: 편의점펜딩결제, 0: not)
+            , case when PAYJP.transaction_type = 'PAY' and PAYJP.status = 'WAITING' and ODI.status in ('PAYMENT_EXCEED_PERIOD') then 1 else 0 end as is_pay_waiting_exceed -- 결제 여부 (1: 편의점펜딩결제 입금일 초과, 0: not)
+            , case when ODI.status not in ('PAYMENT_CANCELED', 'PAYMENT_FAILED', 'REFUND_COMPLETED', 'REFUND_RESOLVED', 'PAYMENT_EXCEED_PERIOD') then 1 else 0 end as is_status_ok -- item별 구매성공 여부 (1: 구매성공 상태, 0: other)
+            , case when PAY.transaction_type = 'PAY' and PAY.status = 'COMPLETED' and ODI.status in ('PAYMENT_CANCELED', 'PAYMENT_FAILED', 'REFUND_COMPLETED', 'REFUND_RESOLVED', 'PAYMENT_CANCELD_WITH_INVISIBLE') then 1 else 0 end as is_cx -- item별 취소/환불 여부 (1: 결제 이후, 취소/환불 상태, 0: other)
+            , case when ODS.parent_order_sheet_id is not null and ODS.operator_created_by is not null then 1 else 0 end as is_admin_ord -- 수기 주문 여부 (1: 수기 주문, 0: 정상 주문)
+            , case when ODS.parent_order_sheet_id is not null and ODS.operator_created_by is null then 1 else 0 end as is_exch_ord -- 교환 주문 여부 (1: 교환 주문, 0: 정상 주문)
+            , ODI.quantity -- 주문수량
+            , case when PAY.transaction_type = 'PAY' and PAY.status = 'COMPLETED' and ODI.status in ('PAYMENT_CANCELED', 'PAYMENT_FAILED', 'REFUND_COMPLETED', 'REFUND_RESOLVED') then ODI.quantity else 0 end as ord_item_cx_qty -- 취소수량
+            , ODI.sale_price * ODI.quantity as ord_item_amt -- 주문금액
+            , case when PAY.transaction_type = 'PAY' and PAY.status = 'COMPLETED' and ODI.status in ('PAYMENT_CANCELED', 'PAYMENT_FAILED', 'REFUND_COMPLETED', 'REFUND_RESOLVED') then ODI.sale_price * ODI.quantity else 0 end as ord_item_cx_amt -- 취소금액
+
+            from order_item as ODI
+            left join payment_transaction as PAY on PAY.order_sheet_id = ODI.order_sheet_id and PAY.status ='COMPLETED'
+            left join payment_transaction as PAYJP on PAYJP.order_sheet_id = ODI.order_sheet_id and PAYJP.status ='WAITING'
+            left join order_sheet as ODS on ODS.order_sheet_id = ODI.order_sheet_id
+            left join cx_order_item as CX on ODI.order_item_id = CX.order_item_id and ODI.status = CX.status
+            left join we_mart.ods_ws_user as USR on USR.user_id = ODS.user_id and USR.part_date = '{key}'
+            left join we_mart.we_id_mapping ID on ODS.user_id = ID.user_id and ID.service_code = 'WS' and ID.user_id is not null and ID.we_member_id is not null
+            left join weverseshop.order_item_release ODR on ODI.order_item_id = ODR.order_item_id
+
+            ) as M1
+      left join we_mart.ods_ws_shipping_group as SHIP on SHIP.shipping_group_id = M1.shipping_group_id and SHIP.part_date = '{key}'
+      left join weverseshop.delivery_service as DSO on DSO.delivery_service_id = M1.delivery_service_id
+      left join weverseshop.express_courier as ESO on DSO.express_courier_id = ESO.express_courier_id
+      left join we_mart.ws_goods_stock as M_GDS on M_GDS.sale_id = M1.sale_id and M_GDS.goods_option_code = M1.goods_option_code and M_GDS.part_date = '{key}' -- M_GDS.sale_stock_id = M1.sale_stock_id
+      left join currency_rate as M_CRC on 
+        case  
+        when M1.pay_dt is not null then M_CRC.currency_code = M1.currency_code and date(M1.pay_dt) >= date(M_CRC.date_id) and date(M1.pay_dt) < date(M_CRC.next_date_id)
+        when M1.pay_dt is null and M1.is_pay_waiting = 1 then M_CRC.currency_code = M1.currency_code and date(M1.ord_cre_dt) >= date(M_CRC.date_id) and date(M1.ord_cre_dt) < date(M_CRC.next_date_id) end
+      left join fc_user_history as FCU on FCU.shop = 'GL' and FCU.we_member_id = M1.we_member_id and nvl(M1.pay_dt, M1.ord_cre_dt) >= FCU.create_dt and nvl(M1.pay_dt, M1.ord_cre_dt) < FCU.expire_dt and M_GDS.we_art_id = FCU.we_art_id
+      left join fc_user_history as FCU_JP on FCU_JP.shop = 'JP' and FCU_JP.we_member_id = M1.we_member_id and nvl(M1.pay_dt, M1.ord_cre_dt) >= FCU_JP.create_dt and nvl(M1.pay_dt, M1.ord_cre_dt) < FCU_JP.expire_dt and M_GDS.we_art_id = FCU_JP.we_art_id
+      left join fc_user_history as FCU_US on FCU_US.shop = 'US' and FCU_US.we_member_id = M1.we_member_id and nvl(M1.pay_dt, M1.ord_cre_dt) >= FCU_US.create_dt and nvl(M1.pay_dt, M1.ord_cre_dt) < FCU_US.expire_dt and M_GDS.we_art_id = FCU_US.we_art_id
+      ) as M2
+
+''')
+
+# 중복 체크
+check = df.groupBy('ord_item_id').count()
+check_cnt = check.where('count > 1 and ord_item_id is not null').count()"
+10,md,,just_heading,#### RUN
+11,py,,code,"# 중복있을 경우 슬렉 노티 발송
+import requests
+
+DEBUG = False
+def send_message_to_slack(target):
+
+    if target == 'order_item_id_unique':
+        message = ""we_mart.ws_order.order_item_id 중복 인입 있습니다.""
+
+    slack_message = f""""""*{key} {message} *""""""
+    slack_token = dbutils.secrets.get(scope=""slack"", key=""token"")
+    slack_icon_emoji = ':official_check:'
+    slack_user_name = 'Item Alert'
+    slack_channel = '#da-monitor'
+
+    response = requests.post('https://slack.com/api/chat.postMessage', {
+        'token': slack_token,
+        'channel': slack_channel,
+        'icon_emoji': slack_icon_emoji,
+        'username': slack_user_name,
+        'text': slack_message
+        })
+    
+    print (response.json())"
+12,py,,code,"# RUN MAIN QUERY
+if check_cnt > 0:
+    send_message_to_slack('order_item_id_unique')
+else:
+    b = Dataflow(run_mode=run_mode, notifier=noti)
+    b.run(dataframe=df, table_info=table, option=option, buckets=['databricks'])"
+13,py,,code,"# DROP CACHE TABLES
+for name in view_list.keys():
+  spark.sql(f'UNCACHE TABLE {name}')
+  spark.sql(f'drop view {name}')
+
+# OPTIMIZE
+spark.sql(f'''
+OPTIMIZE we_mart.ws_order 
+where part_month >= date(date_trunc('month', '{key}')) - interval 2 years
+ZORDER BY (ord_cre_dt, pay_dt)
+''')"
+14,md,,just_heading,#### CREATE PAY SEQ
+15,sql,,code," merge into wev_prod.we_mart.ws_order a
+ using (
+       select distinct
+       ord_sheet_number
+       , ord_item_id
+       , case when is_pay = 1 then dense_rank() over(partition by we_member_id, is_pay order by pay_dt, ord_sheet_id) else null end as pay_seq -- 결제완료 순번
+       , case when is_pay = 1 and is_status_ok = 1 then dense_rank() over(partition by we_member_id, is_pay, is_status_ok order by pay_dt, ord_sheet_id) else null end as pay_ok_seq -- 결제완료 & 구매완료 순번
+       from wev_prod.we_mart.ws_order
+       where is_pay = 1
+ ) b on a.ord_item_id = b.ord_item_id and a.ord_sheet_number = b.ord_sheet_number
+ when matched then
+ update set
+ a.pay_seq = b.pay_seq
+ , a.pay_ok_seq = b.pay_ok_seq"
+16,md,,just_heading,#### Appendix
+17,md ,,etc, ##### create table
+18,py,,code,"
+create = '''
+CREATE OR REPLACE TABLE we_mart.ws_order (
+run_timestamp	timestamp
+,	ord_cre_dt	timestamp	comment	'주문생성일'
+,	ord_upd_dt	timestamp	comment	'주문업데이트일'
+,	pay_dt	timestamp	comment	'결제업데이트일(결제완료일로 간주)'
+,	cx_dt	timestamp	comment	'최초 취소일시'
+,	deliv_completed_dt	timestamp	comment	'배송완료일'
+,	we_member_id	bigint	comment	'we_member_id'
+,	ws_user_id	bigint	comment	'위버스샵 user id'
+,	is_fc	int	comment	'구매시 멤버십 상태 여부'
+,	pay_seq	int	comment	'결제성공 순번'
+,	pay_ok_seq	int	comment	'결제성공 & 주문완료상태 순번'
+,	shop	string	comment	'shop'
+,	ord_sheet_id	bigint	comment	'주문 id'
+,	ord_sheet_number	bigint	comment	'주문번호'
+,	ord_item_id	bigint	comment	'주문상품 id'
+,	sale_id	bigint	comment	'판매 id'
+,	sale_stock_id bigint comment '판매상품 옵션 id'
+,	goods_id	bigint	comment	'상품 id'
+,	goods_code	string	comment	'상품 code'
+,	goods_option_id	bigint	comment	'상품 옵션 id'
+,	goods_option_code	string	comment	'상품 옵션 code'
+,	sap_code	string	comment	'sap code'
+,	we_art_id	int	comment	'아티스트 id'
+,	goods_upr_cat_id	bigint	comment	'상위카테고리 id'
+,	goods_lwr_cat_id	bigint	comment	'하위카테고리 id'
+,	ship_group_id	bigint	comment	'배송그룹 id'
+,	deliv_service_id	bigint	comment	'배송사 id'
+,	we_art_name	string	comment	'아티스트명'
+,	goods_upr_cat_name	string	comment	'상위카테고리'
+,	goods_lwr_cat_name	string	comment	'하위카테고리'
+,	goods_cat	string	comment	'상품구분'
+,	logi_cat	string	comment '물류 카테고리'
+,	goods_name	string	comment	'상품명'
+,	goods_option_name string comment '상품 옵션명'
+,	is_pay	int	comment	'결제여부'
+,	is_pay_waiting int comment '편의점 결제 펜딩 여부'
+,	is_pay_waiting_exceed int comment '편의점 결제 입금일 초과 여부'
+,	is_status_ok	int	comment	'주문완료상태 여부'
+,	is_cx	int comment '취소/환불 여부'
+,	is_admin_ord	int	comment	'수기주문 여부 (1: 수기 주문, 0: 정상 주문 )'
+,	is_exch_ord	int	comment	'교환주문 여부 (1: 교환 주문, 0: 정상 주문)'
+,	ord_status	string	comment	'주문상태'
+,	ord_item_qty	int	comment	'주문상품 수량'
+,	ord_item_cx_qty	int	comment	'취소/환불상품 수량'
+,	ord_item_amt	double	comment	'주문상품 금액'
+,	ord_item_amt_krw	double	comment	'주문상품 금액 (KRW)'
+,	ord_item_cx_amt	double	comment	'취소/환불상품 금액'
+,	ord_item_cx_amt_krw	double	comment	'취소/환불상품 금액 (KRW)'
+,	sale_price	double	comment	'판매금액'
+,	album_qty	int	comment	'앨범수량'
+,	currency_code	string	comment	'통화'
+,	currency_rate	double	comment	'환율'
+,	device_type	string	comment	'클라이언트 플랫폼'
+,	ship_ctry_code	string	comment	'배송국가코드'
+,	ship_prov_area	string	comment	'배송 state / Province'
+,	ship_group_name	string	comment	'배송그룹 이름'
+,	deliv_service_name	string	comment	'배송사 이름'
+,	deliv_express_code	string	comment	'특송사 코드'
+,	logi_type	string	comment	'물류사'
+,	ship_postal_code	string	comment	'우편번호'
+,	deliv_status	string	comment	'배송상태'
+,	ship_cost_type 	string	comment	'배송 구분'
+,	pay_gateway	string	comment	'결제 PG사 (KCP, PAYPAL)'
+,	pay_method	string	comment	'결제 수단'
+,	pay_card_type	string	comment	'결제 신용카드 종류'
+,	pay_mobile_provider string comment  '결제 모바일 통신사'
+,	ctry_code	string	comment	'user 국가코드'
+,	ip	string	comment	'user ip'
+,	trade_co_name	string	comment	'거래처'
+,	part_month	string
+)
+using DELTA
+comment '위버스샵 주문상품정보 마트'
+'''
+# spark.sql(create)
+"

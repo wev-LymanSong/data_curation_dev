@@ -2,7 +2,7 @@ import os
 import ast
 from tools.connectors.github_repo_connector import *
 from tools.connectors.databricks_connector import *
-
+from configurations import *
 def error_to_none(func):
     def wrapper(*args, **kwargs):
         try:
@@ -34,7 +34,7 @@ class StaticDataCollector(object):
     """
 
     # Instantiate Connectors (class variables)
-    gc_databricks = GithubConnector(github_token=os.environ['GITHUB_TOKEN'], repo_name= 'databricks', branch='main')
+    gc_databricks = GithubConnector(github_token=os.environ['GITHUB_TOKEN'], repo_name= REPO_NAME, branch='main', owner = OWNER)
     gc_airflow = GithubConnector(github_token=os.environ['GITHUB_TOKEN'], repo_name='dp-airflow', branch='main')
     db_connector = DatabricksConnector(max_hop = 1)
 
@@ -96,9 +96,15 @@ class StaticDataCollector(object):
             rows = []
             for step in task_list:
                 for task in step['list']:
-                    cur_field = 'we_' + task.split("/")[-3]
-                    cur_db = task.split('/')[-2]
-                    cur_table = task.split("/")[-1]
+                    task = task.split("/data_analytics/")[-1] # data_analytics 하위만 보기
+                    if len(task.split("/")) == 2: # 'etc/{table}' , 'survey/{table}'과 같은 구조
+                        cur_field = task.split("/")[0]
+                        cur_db = 'we_mart'
+                        cur_table = task.split("/")[-1]
+                    elif len(task.split("/")) > 2:
+                        cur_field = 'we_' + task.split("/")[-3] # 'stats/we_mart/{table}'과 같은 보통의 구조 z
+                        cur_db = task.split('/')[-2]
+                        cur_table = task.split("/")[-1]
                     rows.append(
                         {
                             'owner' : owner,
@@ -127,7 +133,12 @@ class StaticDataCollector(object):
         Returns:
             pandas.DataFrame: A DataFrame containing the code blocks with columns for role and codes.
         """
-        with open(os.path.join(field2dir_dict[self.target_field], self.target_table + ".py"), "rb") as f:
+        
+        try:
+            target_path = field2dir_dict[self.target_field]
+        except:
+            target_path = os.path.join(CODE_DIR, self.target_field)
+        with open(os.path.join(target_path, self.target_table + ".py"), "rb") as f:
             source_code_cells = "".join([l.decode() for l in f.readlines()])
             if "\r" in source_code_cells:
                 source_code_cells = source_code_cells.replace("\r", "")
@@ -175,7 +186,12 @@ class StaticDataCollector(object):
                 change_df: DataFrame with full change history
                 author_counts: DataFrame with author contribution summary
         """
-        file_path = os.path.join(field2dir_dict[self.target_field], self.target_table)
+        try:
+            target_path = field2dir_dict[self.target_field]
+        except:
+            target_path = os.path.join(CODE_DIR, self.target_field)
+
+        file_path = os.path.join(target_path, self.target_table)
         change_df = StaticDataCollector.gc_databricks.get_file_change_history(file_path=file_path, verbose=False)
         author_counts = change_df['Author'].value_counts().reset_index()
 

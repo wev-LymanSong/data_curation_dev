@@ -4,7 +4,7 @@ we_mart.ws_goods_stock
 
 # BASIC INFO
 
-|**About**| |
+|**About**| 담당자 수기 입력 필요 |
 | :--- | :--- |
 |**Database**|**we_mart**|
 |**Table Type**|MART PRIMARY|
@@ -58,80 +58,60 @@ we_mart.ws_goods_stock
   
 ### 테이블 개요
 
-* **테이블 목적**: 위버스샵 상품 메타 정보와 판매 정보를 통합한 테이블
+* **테이블 목적**: 위버스샵 상품 메타정보 (재고, 판매정보 포함)
 * **데이터 레벨**: TRANSACTIONAL DATA
 * **파티션 키**: `part_date`
 * **주요 키**: `sale_stock_id`
 
 ### 테이블 특징
-
-* `sale_stock_id` 컬럼을 기준으로 중복 데이터를 제거
-* `sale_stock_name_ko`, `sale_stock_name_ja`, `sale_stock_name_en` 컬럼은 각 언어별 상품명을 나타냄
-* `final_sale_price` 컬럼은 `fixed_price`가 1인 경우 `fixed_sale_price` 값을 사용하고, 그렇지 않으면 `sale_price` 값을 사용
-* `sale_reserv_history` 컬럼은 판매 상태 예약 정보를 담은 구조체 배열
+* `sale_stock_id` 컬럼을 파티션 키로 사용
+* 각 `sale_stock_id` 별로 가장 최근 업데이트된 정보만 추출
+* `sale_stock_id` 값이 null이 아닌 경우 중복 값이 존재할 경우 슬랙 메시지 전송
+* `sale_stock_id` 컬럼은 `sale_stock` 테이블의 `sale_stock_id` 컬럼과 매핑
+* `goods_id`, `sale_id`, `stock_id`, `goods_option_id`, `goods_option_group_id` 컬럼은 각각 `goods`, `sale`, `stock`, `goods_option`, `goods_option_group` 테이블의 `goods_id`, `sale_id`, `stock_id`, `goods_option_id`, `goods_option_group_id` 컬럼과 매핑
+* `we_art_id` 컬럼은 `we_mart.we_artist` 테이블의 `ws_art_id` 컬럼과 매핑
 
 ### 데이터 추출 및 생성 과정
 
-1. **주요 데이터 소스**:
-    * `goods` 테이블
-    * `goods_stock` 테이블
-    * `stock` 테이블
-    * `goods_option` 테이블
-    * `goods_option_group` 테이블
-    * `sale` 테이블
-    * `sale_stock` 테이블
-    * `sale_fixed_price` 테이블
-    * `goods_goods_category` 테이블
-    * `goods_category` 테이블
-    * `goods_translation` 테이블
-    * `shipping_group` 테이블
-    * `trade_company` 테이블
-    * `membership.membership` 테이블
-    * `wev_prod.settlement.settlement_category` 테이블
-    * `wev_prod.membership.benefit` 테이블
-    * `wev_prod.product.status_reservation_item` 테이블
-    * `weverseshop.sale_translation` 테이블
-    * `weverseshop.sale_stock_name` 테이블
-    * `weverseshop.common_info` 테이블
-    * `weverseshop.delivery_service` 테이블
-    * `weverseshop.pickup` 테이블
-    * `weverseshop.goods_option_component` 테이블
-    * `we_mart.we_artist` 테이블
-2. **데이터 전처리**:
-    * 각 소스 테이블에서 필요한 컬럼을 선택
-    * `row_number()` 함수를 이용하여 `sale_stock_id` 컬럼을 기준으로 중복 데이터 제거
-    * `regexp_extract_all()` 함수를 이용하여 `origins` 컬럼에서 원산지 국가 코드 추출
-    * `explode()` 함수를 이용하여 배열을 분리하고 `collect_list()` 함수를 이용하여 원산지 국가 코드와 국가명을 배열로 저장
-    * `case when` 문을 이용하여 `goods_cat` 컬럼을 생성
-    * `collect_set()` 함수를 이용하여 `sale_upr_cat_name` 및 `sale_lwr_cat_name` 컬럼을 생성
-    * `regexp_extract()` 함수를 이용하여 `fc_ver` 및 `fc_kit_ver` 컬럼을 생성
-3. **데이터 통합**:
-    * 여러 소스 테이블을 `left join`으로 연결
-    * `max()` 함수를 이용하여 `fixed_sale_price` 컬럼을 생성
-4. **최종 테이블 생성**:
-    * `create or replace table` 문을 이용하여 테이블 생성
-    * `partitioned by` 절을 이용하여 `part_date` 컬럼을 파티션 키로 설정
+1.  **주요 데이터 소스**:
+    *   `goods`, `goods_stock`, `stock`, `goods_option`, `goods_option_group`, `sale`, `sale_stock`, `sale_fixed_price`, `goods_goods_category`, `goods_category`, `goods_translation`, `shipping_group`, `trade_company`, `we_mart.we_artist`, `weverseshop.sale_stock_name`, `weverseshop.common_info`, `weverseshop.delivery_service`, `wev_prod.membership.benefit`, `weverseshop.pickup`, `weverseshop.sale_translation`, `wev_prod.settlement.settlement_category`, `wev_prod.we_meta.we_country`, `weverseshop.goods_option_component`
+2.  **데이터 전처리**:
+    *   `sale_stock` 테이블에서 `sale_stock_id` 컬럼을 기준으로 가장 최근 업데이트된 정보만 추출
+    *   `goods_option_group` 테이블의 `origins` 컬럼에서 국가 코드를 추출하여 `origins`와 `origins_ctry_name` 컬럼 생성
+    *   `sale_fixed_price` 테이블에서 `sale_id` 컬럼을 기준으로 가장 최근 업데이트된 고정 가격 정보 추출
+    *   `goods_goods_category` 테이블을 이용하여 `goods_id` 컬럼에 해당하는 상위/하위 카테고리 `goods_category_id` 추출
+    *   `goods_category` 테이블을 이용하여 `goods_category_id`에 해당하는 카테고리 이름 추출
+    *   `goods_translation` 테이블을 이용하여 `goods_id` 컬럼에 해당하는 상품 이름 추출
+    *   `sale_stock_name` 테이블을 이용하여 `sale_stock_id` 컬럼에 해당하는 판매 상품 이름 추출
+    *   `sale_translation` 테이블을 이용하여 `sale_id` 컬럼에 해당하는 판매 타이틀, 코멘트 추출
+3.  **데이터 통합**:
+    *   각 데이터 소스 테이블에서 추출된 데이터를 `goods` 테이블을 기준으로 조인
+4.  **최종 테이블 생성**:
+    *   조인된 데이터를 `we_mart.ws_goods_stock` 테이블에 저장
 
 ### 테이블 활용 가이드
 
 * **주요 활용**:
-    * 위버스샵 상품 판매 정보 분석
-    * 상품 재고 현황 파악
-    * 상품 옵션 정보 조회
-    * 판매 상태 변화 추적
+    *   위버스샵 상품 메타정보 (재고, 판매정보 포함) 분석
+    *   판매 상품별 재고 현황 확인
+    *   판매 상품별 가격 정보 확인
+    *   판매 상품별 배송 정보 확인
 * **조인 시 유의사항**:
-    * `sale_stock_id` 컬럼을 기준으로 다른 테이블과 조인
-    * `part_date` 컬럼을 이용하여 파티션을 지정
-    * `goods_id`, `sale_id`, `goods_option_id` 컬럼을 이용하여 다른 상품 정보 테이블과 조인
+    *   `sale_stock_id` 컬럼을 기준으로 `sale_stock` 테이블과 조인하여 추가적인 판매 상품 정보를 얻을 수 있습니다.
+    *   `goods_id` 컬럼을 기준으로 `goods` 테이블과 조인하여 상품 상세 정보를 얻을 수 있습니다.
+    *   `sale_id` 컬럼을 기준으로 `sale` 테이블과 조인하여 판매 정보를 얻을 수 있습니다.
+    *   `stock_id` 컬럼을 기준으로 `stock` 테이블과 조인하여 재고 정보를 얻을 수 있습니다.
+    *   `goods_option_id` 컬럼을 기준으로 `goods_option` 테이블과 조인하여 상품 옵션 정보를 얻을 수 있습니다.
+    *   `goods_option_group_id` 컬럼을 기준으로 `goods_option_group` 테이블과 조인하여 상품 옵션 그룹 정보를 얻을 수 있습니다.
 
 ### 추가 정보
 
-* `run_timestamp` 컬럼은 데이터 처리 시간을 나타냄
-* `part_hour` 컬럼은 파티션 시간을 나타냄
-* `precautions` 컬럼은 상품 유형 사항을 나타냄
-* `notification_info` 컬럼은 상품 고지 정보를 나타냄
-* `sale_title` 컬럼은 판매 타이틀을 나타냄
-* `sale_comment` 컬럼은 판매 코멘트를 나타냄  
+* `goods_cat` 컬럼은 상품 유형을 나타내는 컬럼으로, 'MEMBERSHIP', 'TVOD', 'LIVE_TICKET', 'LIGHT_STICK', 'KIT', 'POD', 'OTHER' 등의 값을 가질 수 있습니다.
+* `is_bom_enabled` 컬럼은 BOM(Bill of Materials) 적용 여부를 나타내는 컬럼으로, 1은 BOM 적용, 0은 BOM 미적용을 나타냅니다.
+* `bom_sap_codes` 컬럼은 BOM 적용된 상품의 구성품 SAP 코드를 나타내는 컬럼입니다.
+* `is_fixed_cash_amount` 컬럼은 개별 캐시 설정 사용 여부를 나타내는 컬럼으로, 1은 사용, 0은 미사용을 나타냅니다.
+* `fixed_cash_amount` 컬럼은 설정된 캐시 금액을 나타내는 컬럼입니다.
+* `sale_reserv_history` 컬럼은 판매 상태 예약 정보를 나타내는 컬럼으로, `reserv_dt`, `hide`, `sale_status`, `reserv_status` 등의 정보를 포함합니다.  
 ---
 # COLUMN INFO
 
@@ -261,199 +241,7 @@ we_mart.ws_goods_stock
 ---
 # HOW TO USE
   
-### Downstream Table/View
-- `ws_goods_stock` 테이블을 이용하여 시간대별 상품 판매 현황을 파악하는 `stats_ws_h_goods_stock` 테이블 생성
-    - ```sql
-      create or replace table we_mart.stats_ws_h_goods_stock (
-        key_date date comment '기준 일자',
-        key_datehour timestamp comment '기준 시간',
-        we_art_id int comment '아티스트 id',
-        shop string comment '샵',
-        sale_id bigint comment '판매 id',
-        sale_stock_id bigint comment '판매 상품 옵션 id',
-        goods_id bigint comment '상품 id',
-        goods_option_id bigint comment '상품 옵션 id',
-        goods_name string comment '상품명',
-        goods_option_name string comment '상품 옵션명',
-        goods_upr_cat_name string comment '상위 카테고리명',
-        goods_lwr_cat_name string comment '하위 카테고리명',
-        goods_cat string comment '상품 구분',
-        logi_cat string comment '물류 카테고리',
-        currency_code string comment '통화',
-        sale_price double comment '판매 가격',
-        tot_goods_qty int comment '총 입고 수량',
-        exp_goods_qty int comment '입고 요청 수량',
-        real_goods_qty int comment '실제 입고 수량',
-        fake_goods_qty int comment '가입고 수량',
-        avail_sale_qty int comment '판매 가능 수량',
-        part_date string comment '파티션 일자',
-        run_timestamp timestamp comment '배치 시간'
-      )
-      partitioned by (part_date)
-      comment '시간대별 상품 재고 및 판매 현황';
-      
-      -- `ws_goods_stock` 테이블을 `stats_ws_h_goods_stock` 테이블에 시간대별로 집계하여 추가
-      insert into we_mart.stats_ws_h_goods_stock
-      select
-        date(GDS.stock_upd_dt) as key_date,
-        date_trunc('hour', GDS.stock_upd_dt) as key_datehour,
-        GDS.we_art_id,
-        GDS.shop,
-        GDS.sale_id,
-        GDS.sale_stock_id,
-        GDS.goods_id,
-        GDS.goods_option_id,
-        GDS.goods_name,
-        GDS.goods_option_name,
-        GDS.goods_upr_cat_name,
-        GDS.goods_lwr_cat_name,
-        GDS.goods_cat,
-        GDS.logi_cat,
-        GDS.currency_code,
-        GDS.sale_price,
-        GDS.tot_goods_qty,
-        GDS.exp_goods_qty,
-        GDS.real_goods_qty,
-        GDS.fake_goods_qty,
-        GDS.avail_sale_qty,
-        date(GDS.stock_upd_dt) as part_date,
-        current_timestamp() as run_timestamp
-      from we_mart.ws_goods_stock as GDS
-      where GDS.part_date = '2024-01-01';
-      
-      -- `stats_ws_h_goods_stock` 테이블에 `ws_goods_stock` 테이블의 데이터를 추가
-      insert overwrite table we_mart.stats_ws_h_goods_stock partition(part_date = '2024-01-01')
-      select
-        date(GDS.stock_upd_dt) as key_date,
-        date_trunc('hour', GDS.stock_upd_dt) as key_datehour,
-        GDS.we_art_id,
-        GDS.shop,
-        GDS.sale_id,
-        GDS.sale_stock_id,
-        GDS.goods_id,
-        GDS.goods_option_id,
-        GDS.goods_name,
-        GDS.goods_option_name,
-        GDS.goods_upr_cat_name,
-        GDS.goods_lwr_cat_name,
-        GDS.goods_cat,
-        GDS.logi_cat,
-        GDS.currency_code,
-        GDS.sale_price,
-        GDS.tot_goods_qty,
-        GDS.exp_goods_qty,
-        GDS.real_goods_qty,
-        GDS.fake_goods_qty,
-        GDS.avail_sale_qty,
-        date(GDS.stock_upd_dt) as part_date,
-        current_timestamp() as run_timestamp
-      from we_mart.ws_goods_stock as GDS
-      where GDS.part_date = '2024-01-01';
-    ```
-- `ws_goods_stock` 테이블을 이용하여 특정 아티스트의 상품 판매 정보를 추출하는 `view_ws_goods_stock_artist` 뷰 생성
-    - ```sql
-      create or replace view we_mart.view_ws_goods_stock_artist as
-      select 
-        GDS.we_art_id,
-        GDS.we_art_name,
-        GDS.goods_name,
-        GDS.goods_option_name,
-        GDS.goods_upr_cat_name,
-        GDS.goods_lwr_cat_name,
-        GDS.sale_id,
-        GDS.sale_stock_id,
-        GDS.goods_id,
-        GDS.goods_option_id,
-        GDS.sale_price,
-        GDS.sale_qty,
-        GDS.avail_sale_qty,
-        GDS.part_date
-      from we_mart.ws_goods_stock as GDS
-      where GDS.we_art_id = ARTIST; -- 특정 아티스트 id를 입력
-    ```
-### Data Extraction
-- `ws_goods_stock` 테이블에서 특정 기간 동안 판매된 상품의 최신 재고 정보 추출
-    - ```sql
-      select 
-        GDS.goods_name,
-        GDS.goods_option_name,
-        GDS.goods_upr_cat_name,
-        GDS.goods_lwr_cat_name,
-        GDS.sale_id,
-        GDS.sale_stock_id,
-        GDS.goods_id,
-        GDS.goods_option_id,
-        GDS.sale_price,
-        GDS.sale_qty,
-        GDS.avail_sale_qty,
-        GDS.part_date
-      from we_mart.ws_goods_stock as GDS
-      where GDS.part_date = '2024-01-01' -- 특정 날짜를 입력
-      and GDS.sale_id in (select distinct sale_id from we_mart.ws_goods_stock where part_date >= '2024-01-01' and part_date <= '2024-01-31'); -- 특정 기간 동안 판매된 상품의 sale_id만 추출
-    ```
-- `ws_goods_stock` 테이블에서 특정 상품의 재고 변동 이력 추출
-    - ```sql
-      select 
-        GDS.part_date,
-        GDS.stock_upd_dt,
-        GDS.tot_goods_qty,
-        GDS.exp_goods_qty,
-        GDS.real_goods_qty,
-        GDS.fake_goods_qty,
-        GDS.avail_sale_qty
-      from we_mart.ws_goods_stock as GDS
-      where GDS.goods_id = GOODS_ID -- 특정 상품 id를 입력
-      order by GDS.part_date, GDS.stock_upd_dt;
-    ```
-- `ws_goods_stock` 테이블에서 특정 아티스트의 특정 상품의 재고 정보 추출
-    - ```sql
-      select 
-        GDS.we_art_id,
-        GDS.goods_name,
-        GDS.goods_option_name,
-        GDS.goods_upr_cat_name,
-        GDS.goods_lwr_cat_name,
-        GDS.sale_id,
-        GDS.sale_stock_id,
-        GDS.goods_id,
-        GDS.goods_option_id,
-        GDS.sale_price,
-        GDS.sale_qty,
-        GDS.avail_sale_qty,
-        GDS.tot_goods_qty,
-        GDS.exp_goods_qty,
-        GDS.real_goods_qty,
-        GDS.fake_goods_qty,
-        GDS.part_date
-      from we_mart.ws_goods_stock as GDS
-      where GDS.we_art_id = ARTIST -- 특정 아티스트 id를 입력
-      and GDS.goods_id = GOODS_ID -- 특정 상품 id를 입력
-      order by GDS.part_date;
-    ```
-- `ws_goods_stock` 테이블에서 특정 카테고리 상품의 재고 정보 추출
-    - ```sql
-      select 
-        GDS.goods_upr_cat_name,
-        GDS.goods_lwr_cat_name,
-        GDS.goods_name,
-        GDS.goods_option_name,
-        GDS.sale_id,
-        GDS.sale_stock_id,
-        GDS.goods_id,
-        GDS.goods_option_id,
-        GDS.sale_price,
-        GDS.sale_qty,
-        GDS.avail_sale_qty,
-        GDS.tot_goods_qty,
-        GDS.exp_goods_qty,
-        GDS.real_goods_qty,
-        GDS.fake_goods_qty,
-        GDS.part_date
-      from we_mart.ws_goods_stock as GDS
-      where GDS.goods_upr_cat_id = GOODS_UPR_CAT_ID -- 특정 상위 카테고리 id를 입력
-      and GDS.goods_lwr_cat_id = GOODS_LWR_CAT_ID -- 특정 하위 카테고리 id를 입력
-      order by GDS.part_date;
-    ```  
+No content.  
 ---
 # PIPELINE INFO
 
@@ -517,5 +305,19 @@ we_mart.ws_goods_stock
 
 ## 🐤 Downstream Tables Info
   
-No content.  
+### Downstream Tables
+- **stats_ws_d_ord_product** : 위버스샵 상품별 주문 통계를 일별로 집계한 테이블. 
+    - `ws_goods_stock` 테이블을 이용하여 상품 정보(상품명, 옵션명, 카테고리, 아티스트 등)를 가져와 `stats_ws_d_ord_product` 테이블에 추가.
+    - 상품별 주문 현황 분석, 상품별 매출 분석, 상품별 판매 트렌드 분석 등에 활용.
+- **stats_ws_d_fc_kit_pur** :  멤버십 키트 구매 수량 통계를 일별로 집계한 테이블. 
+    - `ws_goods_stock` 테이블을 이용하여 키트 상품 정보(상품명, 옵션명, 상품 코드, 거래처명, bm_option 등)를 가져와 `stats_ws_d_fc_kit_pur` 테이블에 추가.
+    - 멤버십 키트 상품별 판매 현황 분석, 멤버십 키트 상품별 매출 분석, 멤버십 키트 상품별 구매 트렌드 분석 등에 활용.
+- **ws_order** : 위버스샵 상품판매 내역 데이터를 일별로 집계한 마트 테이블.
+    - `ws_goods_stock` 테이블을 이용하여 상품 정보(상품명, 옵션명, 카테고리, 아티스트, 거래처명, bm_option, POD 관련 정보 등)를 가져와 `ws_order` 테이블에 추가.
+    - 위버스샵 주문 데이터 분석, 주문 현황 분석, 매출 분석, 판매 트렌드 분석, 고객 분석 등에 활용.
+
+### Downstream View Tables
+- **view_ws_goods_stock_update** :  `ws_goods_stock` 테이블의 최신 파티션 데이터를 조회할 수 있는 뷰 테이블.
+    - `ws_goods_stock` 테이블에서 최신 파티션 날짜의 데이터만 필터링하여 조회.
+    - `ws_goods_stock` 테이블의 최신 상품 정보를 빠르게 조회하는 용도로 활용.  
 ---

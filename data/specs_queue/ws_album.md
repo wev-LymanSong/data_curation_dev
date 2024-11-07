@@ -4,7 +4,7 @@ we_meta.ws_album
 
 # BASIC INFO
 
-|**About**| |
+|**About**| 담당자 수기 입력 필요 |
 | :--- | :--- |
 |**Database**|**we_meta**|
 |**Table Type**|META PRIMARY|
@@ -65,60 +65,69 @@ we_meta.ws_album
   
 ### 테이블 개요
 
-* **테이블 목적**: 위버스샵에서 판매되는 앨범의 메타 정보를 담고 있음
-* **데이터 레벨**: transactional data
-* **파티션 키**: `part_date`
-* **주요 키**: `album_id`, `sale_id`, `goods_id`
+*   **테이블 목적**: 위버스샵에서 판매되는 앨범 상품에 대한 메타 정보를 담고 있는 테이블
+*   **데이터 레벨**: META DATA
+*   **파티션 키**: `part_date`
+*   **주요 키**: `album_id`
 
-### 테이블 특징
+### 테이블 Sources
 
-* `ws_album_not_null_list` 테이블에서 앨범 정보를 추출하여 생성됨
-* `ws_album_id` 테이블에서 `album_id`를 가져와서 매핑
-* 앨범 관련 정보를 `we_mart.we_artist` 테이블과 조인하여 생성
-* 앨범 판매 정보를 `weverseshop.goods`, `weverseshop.stock`, `weverseshop.sale`, `weverseshop.sale_stock` 테이블과 조인하여 생성
-* `album_scm_option_type` 컬럼은 `map` 타입으로 저장되어 SCM팀에서 사용하는 앨범 판매 단위 종류 정보를 담고 있음
-* `goods_option_values` 컬럼은 `struct` 타입으로 저장되어 상품 옵션 정보를 담고 있음
+*   내부 데이터
+    *   `we_meta.ws_album_not_null_list`: 앨범 상품에 대한 필수 메타 정보를 담고 있는 테이블. 필수 입력 항목과 자동 생성 항목으로 구성됨.
+    *   `we_mart.we_artist`: 아티스트 정보를 담고 있는 테이블. `we_art_id`, `we_art_name` 등의 컬럼을 제공.
+    *   `weverseshop.goods`: 위버스샵 상품 정보를 담고 있는 테이블. `goods_id`와 `goods_name` 컬럼을 제공.
+    *   `weverseshop.goods_option`: 위버스샵 상품 옵션 정보를 담고 있는 테이블. `goods_option_id`, `goods_option_code`, `goods_option_name` 컬럼을 제공.
+    *   `weverseshop.goods_option_group`: 위버스샵 상품 옵션 그룹 정보를 담고 있는 테이블. `album_quantity` 컬럼을 제공.
+    *   `weverseshop.stock`: 위버스샵 재고 정보를 담고 있는 테이블. `stock_id` 컬럼을 제공.
+    *   `weverseshop.sale`: 위버스샵 판매 정보를 담고 있는 테이블. `sale_id` 컬럼을 제공.
+    *   `weverseshop.goods_translation`: 위버스샵 상품 번역 정보를 담고 있는 테이블. `goods_name` 컬럼을 제공.
+    *   `weverseshop.sale_stock`: 위버스샵 판매 재고 정보를 담고 있는 테이블. `sale_stock_id` 컬럼을 제공.
+    *   `weverseshop.goods_goods_category`: 위버스샵 상품 카테고리 정보를 담고 있는 테이블. `goods_category_id` 컬럼을 제공.
+    *   `weverseshop.goods_category`: 위버스샵 카테고리 정보를 담고 있는 테이블. `label_artist_id` 컬럼을 제공.
+    *   `we_meta.ws_album_id`: 앨범에 대한 고유 ID를 담고 있는 테이블. `album_name`과 `we_art_id`로 ID를 생성.
 
 ### 데이터 추출 및 생성 과정
 
-1.  **주요 데이터 소스**:
-    *   `we_meta.ws_album_not_null_list`: 앨범 메타 정보 (앨범명, 아티스트, 발매일 등)
-    *   `we_meta.ws_album_id`: 앨범 ID 정보
-    *   `we_mart.we_artist`: 아티스트 정보
-    *   `weverseshop.goods`: 상품 정보
-    *   `weverseshop.goods_stock`: 상품 재고 정보
-    *   `weverseshop.stock`: 재고 정보
-    *   `weverseshop.goods_option`: 상품 옵션 정보
-    *   `weverseshop.goods_option_group`: 상품 옵션 그룹 정보
-    *   `weverseshop.sale`: 판매 정보
-    *   `weverseshop.sale_stock`: 판매 재고 정보
+1.  **앨범 상품 정보 가져오기**:
+    *   `weverseshop.goods` 테이블에서 `goods_id`, `goods_name` 등의 정보를 가져온다.
+    *   `weverseshop.goods_option_group` 테이블에서 `album_quantity` 컬럼을 가져온다.
+    *   `weverseshop.sale` 테이블에서 `sale_id`를 가져온다.
+    *   `weverseshop.goods_translation` 테이블에서 `goods_name` 컬럼을 가져온다.
+    *   `we_mart.we_artist` 테이블에서 `we_art_id`, `we_art_name` 등의 정보를 가져온다.
+    *   `weverseshop.sale_stock` 테이블에서 `sale_stock_id` 컬럼을 가져온다.
+    *   `weverseshop.goods_goods_category` 테이블에서 `goods_category_id` 컬럼을 가져온다.
+    *   `weverseshop.goods_category` 테이블에서 `label_artist_id` 컬럼을 가져온다.
+    *   `we_meta.ws_album_not_null_list` 테이블에서 앨범 메타 정보를 가져온다.
+    *   `we_meta.ws_album_id` 테이블에서 앨범 ID를 가져온다.
 2.  **데이터 전처리**:
-    *   `we_meta.ws_album_not_null_list` 테이블에서 앨범 정보를 추출
-    *   `we_meta.ws_album_id` 테이블에서 `album_id`를 가져와서 매핑
-    *   `we_mart.we_artist` 테이블과 조인하여 아티스트 정보 추가
-    *   `weverseshop.goods`, `weverseshop.stock`, `weverseshop.sale`, `weverseshop.sale_stock` 테이블과 조인하여 앨범 판매 정보 추가
+    *   앨범 명, 아티스트 명 등의 컬럼을 기준으로 중복 제거를 수행한다.
+    *   `album_scm_option_type` 컬럼을 `MapType`으로 변환한다.
+    *   `is_wev_exclusive` 컬럼을 `tinyint`로 변환한다.
+    *   `is_wa_included` 컬럼을 `tinyint`로 변환한다.
+    *   `is_enable` 컬럼을 `tinyint`로 변환한다.
 3.  **데이터 통합**:
-    *   앨범 메타 정보, 아티스트 정보, 판매 정보를 하나의 데이터프레임으로 통합
+    *   위 과정에서 가져온 데이터를 `we_meta.ws_album` 테이블에 통합한다.
+    *   앨범 ID가 없는 경우 `we_meta.ws_album_id` 테이블에서 새 ID를 생성하여 추가한다.
+    *   `sale_id`, `goods_id`, `goods_option_id`, `stock_id` 등의 컬럼을 `array` 타입으로 변환한다.
 4.  **최종 테이블 생성**:
-    *   통합된 데이터프레임을 `we_meta.ws_album` 테이블에 저장
+    *   데이터를 `we_meta.ws_album` 테이블에 `append` 모드로 저장한다.
+    *   `part_date` 컬럼을 파티션 키로 사용하여 데이터를 분할 저장한다.
 
 ### 테이블 활용 가이드
 
-* **주요 활용**:
-    *   위버스샵에서 판매되는 앨범의 메타 정보를 조회
-    *   앨범 판매 현황 분석
-    *   앨범 관련 마케팅 활동 분석
-* **조인 시 유의사항**:
-    *   `we_art_id` 컬럼을 사용하여 `we_mart.we_artist` 테이블과 조인
-    *   `sale_id` 컬럼을 사용하여 `weverseshop.sale` 테이블과 조인
-    *   `goods_id` 컬럼을 사용하여 `weverseshop.goods` 테이블과 조인
+*   **주요 타겟 분야**: 위버스샵 앨범 상품의 메타 정보를 분석하고, 앨범 판매 현황, 아티스트별 앨범 정보 등을 파악하는 데 사용
+*   **조인 시 유의사항**:
+    *   `we_meta.ws_album` 테이블은 `we_meta.ws_album_not_null_list` 테이블에서 가져온 데이터를 기반으로 생성된다. 따라서 `we_meta.ws_album_not_null_list` 테이블에 없는 정보는 포함되지 않는다.
+    *   `sale_id` 컬럼을 사용하여 `weverseshop.sale` 테이블과 조인하여 앨범 상품의 판매 정보를 추가로 얻을 수 있다.
+    *   `goods_id` 컬럼을 사용하여 `weverseshop.goods` 테이블과 조인하여 앨범 상품의 상세 정보를 추가로 얻을 수 있다.
+    *   `we_art_id` 컬럼을 사용하여 `we_mart.we_artist` 테이블과 조인하여 아티스트 정보를 추가로 얻을 수 있다.
 
 ### 추가 정보
 
-*   `ws_album_not_null_list` 테이블은 `we_meta` 스키마에 존재하며, 앨범 정보를 담고 있음.
-*   `ws_album_id` 테이블은 `we_meta` 스키마에 존재하며, 앨범 ID 정보를 담고 있음.
-*   `we_mart.we_artist` 테이블은 `we_mart` 스키마에 존재하며, 아티스트 정보를 담고 있음.
-*   `weverseshop.goods`, `weverseshop.stock`, `weverseshop.sale`, `weverseshop.sale_stock` 테이블은 `weverseshop` 스키마에 존재하며, 위버스샵 상품 및 판매 정보를 담고 있음.  
+*   `we_meta.ws_album` 테이블은 `we_meta.ws_album_id` 테이블에서 앨범 ID를 가져와 사용한다. `we_meta.ws_album_id` 테이블은 `we_meta.ws_album_not_null_list` 테이블에서 가져온 앨범 정보를 기반으로 앨범 ID를 생성한다.
+*   `is_wa_included` 컬럼은 위버스 앨범 포함 여부를 나타내는 컬럼으로, `weverseshop.sale` 테이블의 `shop_tags` 컬럼에서 'WEVERSE_ALBUM' 값이 있는 경우 `1`을, 그렇지 않으면 `0`을 할당한다.
+*   `album_scm_option_type` 컬럼은 SCM팀에서 사용하는 앨범 판매 단위 종류를 나타내는 컬럼으로, `MapType`으로 저장된다.
+*   `part_date` 컬럼은 데이터 파티션을 위한 컬럼으로, `yyyy-MM-dd` 형식의 문자열로 저장된다.  
 ---
 # COLUMN INFO
 
@@ -167,158 +176,69 @@ we_meta.ws_album
 ---
 # HOW TO USE
   
+`
 ### Downstream Table/View
-- `ws_album` 테이블을 사용하여 `we_mart.ws_album_sale` 테이블을 생성
+- `ws_album` 테이블을 이용하여 해당 아티스트의 앨범 정보를 조회하는 뷰를 생성
     - ```sql
-      create or replace table we_mart.ws_album_sale
-      (
-        -- ...
-        , album_id int comment "앨범 고유 번호"
-        , album_name string comment "정식 앨범명"
-        , album_qty_type string comment "앨범 판매 단위 종류"
-        , album_option_type string comment "앨범 패키지 및 형태 구분"
-        , album_physical_type string comment "앨범 물리 형태 구분"
-        , is_weverse_album int comment "위버스 앨범 여부"
-        , wa_album_id int comment "위버스 앨범 ID"
-        -- ...
-      )
-      partitioned by (part_date)
-      comment "위버스 앨범 판매 마트"
-      ;
+      create or replace view wev_prod.we_mart.view_artist_album_info as
+      select
+      a.we_art_id, a.we_art_name, a.ws_art_id, a.artist_name, a.album_id, a.album_name, a.album_release_date, a.album_cumulative_date, a.album_qty_type, a.album_option_type, a.album_physical_type, a.is_wev_exclusive, a.is_wa_included, a.target_ctry, a.sale_id, a.goods_id, a.goods_name, a.sap_codes, a.goods_option_values, a.is_enable, a.upd_by, a.upd_date
+      from wev_prod.we_meta.ws_album a
+      where a.we_art_id = ARTIST
+      and a.part_date = '2024-01-01'
       ```
-- `ws_album` 테이블을 사용하여 `we_mart.ws_album_sale` 테이블과 조인
+
+- `ws_album` 테이블을 이용하여 해당 앨범의 판매 정보를 조회하는 뷰를 생성
     - ```sql
-      select 
-        ws_order.we_member_id
-      , ws_order.ord_sheet_number
-      , ws_album.album_name
-      , ws_album.album_qty_type
-      from we_mart.ws_order
-      join we_meta.ws_album
-      on ws_order.sale_id = ws_album.sale_id
-      where ws_order.part_date = '2024-08-28'
-      and ws_order.logi_cat = 'ALBUM'
-      ;
+      create or replace view wev_prod.we_mart.view_album_sales_info as
+      select
+      a.album_id, a.album_name, a.album_release_date, a.album_cumulative_date, a.sale_id, a.goods_id, a.goods_name, a.is_wev_exclusive, a.is_wa_included, a.target_ctry, a.album_qty, a.album_qty_type, a.album_option_type, a.album_physical_type, a.shop, a.is_enable, a.upd_by, a.upd_date
+      from wev_prod.we_meta.ws_album a
+      where a.album_id = ALBUM_ID
+      and a.part_date = '2024-01-01'
       ```
-- `ws_album` 테이블을 사용하여 `we_mart.stats_ws_d_album_cumul` 테이블을 생성
+
+- `ws_album` 테이블을 이용하여 해당 아티스트의 최신 앨범 정보를 조회하는 뷰를 생성
     - ```sql
-      create or replace table we_mart.stats_ws_d_album_cumul
-      (
-        -- ...
-        , album_id int comment "앨범 ID"
-        , album_name string comment "앨범 명"
-        , album_type string comment "앨범 타입"
-        -- ...
-      )
-      partitioned by (key_date)
-      comment "앨범 별 초동기간 판매 정보"
-      ;
+      create or replace view wev_prod.we_mart.view_artist_latest_album_info as
+      select
+      a.we_art_id, a.we_art_name, a.ws_art_id, a.artist_name, a.album_id, a.album_name, a.album_release_date, a.album_cumulative_date, a.album_qty_type, a.album_option_type, a.album_physical_type, a.is_wev_exclusive, a.is_wa_included, a.target_ctry, a.sale_id, a.goods_id, a.goods_name, a.sap_codes, a.goods_option_values, a.is_enable, a.upd_by, a.upd_date
+      from wev_prod.we_meta.ws_album a
+      where a.we_art_id = ARTIST
+      and a.part_date = (select max(part_date) from wev_prod.we_meta.ws_album)
       ```
-- `ws_album` 테이블을 사용하여 `we_mart.stats_ws_d_album_cumul` 테이블과 조인
-    - ```sql
-      select 
-        ws_album.album_id
-      , ws_album.album_name
-      , ws_album.album_cumulative_date
-      , stats_ws_d_album_cumul.key_date
-      , stats_ws_d_album_cumul.album_pur_qty
-      from we_meta.ws_album
-      join we_mart.stats_ws_d_album_cumul
-      on ws_album.album_id = stats_ws_d_album_cumul.album_id
-      where ws_album.part_date = '2024-08-28'
-      and stats_ws_d_album_cumul.key_date >= ws_album.album_release_date
-      and stats_ws_d_album_cumul.key_date <= ws_album.album_cumulative_date
-      ;
-      ```
-- `ws_album` 테이블을 사용하여 `we_mart.stats_ws_d_album_sale_scm` 테이블을 생성
-    - ```sql
-      create or replace table we_mart.stats_ws_d_album_sale_scm
-      (
-        -- ...
-        , album_id int comment "앨범 고유 번호"
-        , album_name string comment "정식 앨범명"
-        , album_scm_option_name string comment "scm 지정 앨범 옵션명"
-        -- ...
-      )
-      partitioned by (is_cx_on_the_day, part_album_id)
-      comment "SCM 앨범 판매"
-      ;
-      ```
-- `ws_album` 테이블을 사용하여 `we_mart.stats_ws_d_album_sale_scm` 테이블과 조인
-    - ```sql
-      select 
-        ws_album.album_id
-      , ws_album.album_name
-      , ws_album.album_scm_option_type
-      , stats_ws_d_album_sale_scm.key_date
-      , stats_ws_d_album_sale_scm.net_pay_scm_qty
-      from we_meta.ws_album
-      join we_mart.stats_ws_d_album_sale_scm
-      on ws_album.album_id = stats_ws_d_album_sale_scm.album_id
-      where ws_album.part_date = '2024-08-28'
-      and stats_ws_d_album_sale_scm.is_cx_on_the_day = 0
-      ;
-      ```
+
 ### Data Extraction
-- "2024-08-28" 날짜에 "ARTIST" 아티스트의 앨범 정보를 추출
+- `ws_album` 테이블에서 해당 아티스트의 앨범 정보를 추출
     - ```sql
-      select 
-        album_id
-      , album_name
-      , album_release_date
-      , album_cumulative_date
-      , album_qty_type
-      , album_option_type
-      , album_physical_type
-      , is_wev_exclusive
-      , is_wa_included
-      from we_meta.ws_album
-      where part_date = '2024-08-28'
-      and we_art_id = ARTIST
-      ;
+      select we_art_id, we_art_name, album_id, album_name, album_release_date, album_cumulative_date, album_qty_type, album_option_type, album_physical_type, is_wev_exclusive, is_wa_included, target_ctry
+      from wev_prod.we_meta.ws_album
+      where we_art_id = ARTIST
+      and part_date = '2024-01-01'
       ```
-- "2024-08-28" 날짜에 "ARTIST" 아티스트의 앨범 중 위버스 앨범 포함 여부가 "YES"인 앨범 정보를 추출
+
+- `ws_album` 테이블에서 해당 앨범의 판매 정보를 추출
     - ```sql
-      select 
-        album_id
-      , album_name
-      , album_release_date
-      , album_cumulative_date
-      , album_qty_type
-      , album_option_type
-      , album_physical_type
-      from we_meta.ws_album
-      where part_date = '2024-08-28'
-      and we_art_id = ARTIST
-      and is_wa_included = 'YES'
-      ;
+      select album_id, album_name, album_release_date, album_cumulative_date, sale_id, goods_id, goods_name, is_wev_exclusive, is_wa_included, target_ctry, album_qty, album_qty_type, album_option_type, album_physical_type, shop, is_enable, upd_by, upd_date
+      from wev_prod.we_meta.ws_album
+      where album_id = ALBUM_ID
+      and part_date = '2024-01-01'
       ```
-- "2024-08-28" 날짜에 "ARTIST" 아티스트의 앨범 중 "Global" 지역에 발매된 앨범 정보를 추출
+
+- `ws_album` 테이블에서 최신 앨범 발매 정보를 추출 (최신 앨범 정보는 `part_date` 컬럼을 통해 파악)
     - ```sql
-      select 
-        album_id
-      , album_name
-      , album_release_date
-      , album_cumulative_date
-      from we_meta.ws_album
-      where part_date = '2024-08-28'
-      and we_art_id = ARTIST
-      and target_ctry = 'Global'
-      ;
+      select we_art_id, we_art_name, album_id, album_name, album_release_date, album_cumulative_date, album_qty_type, album_option_type, album_physical_type, is_wev_exclusive, is_wa_included, target_ctry
+      from wev_prod.we_meta.ws_album
+      where part_date = (select max(part_date) from wev_prod.we_meta.ws_album)
       ```
-- "2024-08-28" 날짜에 "ARTIST" 아티스트의 앨범 중 "ALBUM_OPTION" 옵션을 가지는 앨범 정보를 추출
+
+- `ws_album` 테이블에서 해당 아티스트의 앨범 발매 정보를 추출 (앨범 발매일 기준으로 정렬)
     - ```sql
-      select 
-        album_id
-      , album_name
-      , album_release_date
-      , album_cumulative_date
-      , album_qty_type
-      from we_meta.ws_album
-      where part_date = '2024-08-28'
-      and we_art_id = ARTIST
-      and album_option_type = 'ALBUM_OPTION'
-      ;
+      select we_art_id, we_art_name, album_id, album_name, album_release_date, album_cumulative_date, album_qty_type, album_option_type, album_physical_type, is_wev_exclusive, is_wa_included, target_ctry
+      from wev_prod.we_meta.ws_album
+      where we_art_id = ARTIST
+      and part_date = '2024-01-01'
+      order by album_release_date
       ```  
 ---
 # PIPELINE INFO
@@ -363,5 +283,28 @@ we_meta.ws_album
 
 ## 🐤 Downstream Tables Info
   
----  
+### Downstream Tables
+- **`we_mart.ws_album_sale`**: 위버스샵 앨범 판매 데이터를 담은 테이블. `ws_album` 테이블을 조인하여 앨범 정보를 추가하고, `ws_order` 테이블을 조인하여 주문 정보를 추가하여 앨범 판매 데이터를 생성.
+    - `ws_album` 테이블의 `sale_id` 컬럼을 사용하여 `ws_order` 테이블과 조인하고, `album_id`, `album_name`, `we_art_id`, `we_art_name` 등 앨범 관련 정보를 추가.
+    - 위버스샵 앨범 판매 데이터를 추출할 때, `we_member_id`, `sale_id`, `album_id`, `album_name`, `goods_name` 등의 컬럼을 사용하여 원하는 조건에 맞는 데이터를 추출 가능.
+- **`we_mart.wa_album`**: 위버스 앨범 정보를 담은 테이블. `ws_album` 테이블을 조인하여 위버스샵 앨범 정보를 추가.
+    - `ws_album` 테이블의 `album_id`, `album_name`, `we_art_id`, `we_art_name` 등 앨범 관련 정보를 조인하여 사용.
+    - 위버스 앨범 정보를 추출할 때, `wa_album_id`, `wa_album_name`, `we_art_id`, `we_art_name`, `album_id`, `album_name` 등의 컬럼을 사용하여 원하는 조건에 맞는 데이터를 추출 가능.
+- **`we_mart.stats_ws_d_album_sale`**: 일간 앨범 판매 통계를 담은 테이블. `ws_album` 테이블을 조인하여 앨범 정보를 추가하고, `ws_album_sale` 테이블을 사용하여 일별 앨범 판매 데이터를 집계.
+    - `ws_album` 테이블의 `album_id`, `album_name`, `we_art_id`, `we_art_name` 등 앨범 관련 정보를 조인하여 사용.
+    - 위버스샵 앨범 판매 통계를 추출할 때, `key_date`, `ctry_code`, `album_id`, `album_name`, `ord_pur_cnt`, `ord_pur_amt`, `album_pur_cnt` 등의 컬럼을 사용하여 원하는 조건에 맞는 데이터를 추출 가능.
+- **`we_mart.wa_user_album_reg`**: 위버스 앨범 등록 정보를 담은 테이블. `ws_album` 테이블을 조인하여 앨범 정보를 추가.
+    - `ws_album` 테이블의 `album_id`, `album_name`, `we_art_id`, `we_art_name` 등 앨범 관련 정보를 조인하여 사용.
+    - 위버스 앨범 등록 정보를 추출할 때, `we_member_id`, `wa_album_id`, `wa_album_name`, `album_id`, `album_name`, `cre_dt`, `upd_dt` 등의 컬럼을 사용하여 원하는 조건에 맞는 데이터를 추출 가능.
+- **`we_mart.stats_ws_d_album_scm`**: SCM 앨범 판매 통계를 담은 테이블. `ws_album` 테이블을 조인하여 앨범 정보를 추가하고, `ws_album_sale` 테이블을 사용하여 일별 앨범 판매 데이터를 집계.
+    - `ws_album` 테이블의 `album_id`, `album_name`, `we_art_id`, `we_art_name`, `album_scm_option_type` 등 앨범 관련 정보를 조인하여 사용.
+    - 위버스샵 SCM 앨범 판매 통계를 추출할 때, `key_date`, `shop`, `album_id`, `album_name`, `album_scm_option_name`, `net_pay_album_qty`, `net_pay_scm_qty` 등의 컬럼을 사용하여 원하는 조건에 맞는 데이터를 추출 가능.
+
+### Downstream View Tables
+- **`we_meta.ws_album_latest`**: `ws_album` 테이블에서 가장 최근 파티션 날짜의 데이터만 추출한 뷰 테이블.
+    - `ws_album` 테이블에서 `part_date` 컬럼을 사용하여 최근 파티션 날짜를 찾고, 해당 날짜의 데이터만 추출.
+    - 위버스샵 앨범 메타 정보를 추출할 때, `ws_album_latest` 뷰 테이블을 사용하여 가장 최근의 데이터를 효율적으로 추출 가능.
+- **`we_meta.ws_album_info`**: `ws_album` 테이블에서 앨범별 종합 정보를 추출한 뷰 테이블.
+    - `ws_album` 테이블에서 `album_id`, `album_name`, `we_art_id`, `we_art_name`, `target_ctry`, `is_wa_included` 등의 컬럼을 사용하여 앨범별 정보를 집계.
+    - 위버스샵 앨범 종합 정보를 추출할 때, `ws_album_info` 뷰 테이블을 사용하여 앨범별 정보를 효율적으로 추출 가능.  
 ---

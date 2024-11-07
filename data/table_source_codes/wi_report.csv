@@ -1,0 +1,557 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,## we_meta.wi_rep
+2,md,,basic_info,"#### Basic Info
+* 주간 위버스 인사이트 리포트 메타 데이터
+    * 데이터서비스 개발팀에서 제공하는 API로 배포된 전체 리포트의 메타 데이터 리스트를 받아와 정리한 데이터
+    * 히스토리 관리를 위해 주간 APPEND 형태로 구성
+* META
+* DAILY APPEND
+* [WIKI]()
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2024-01-11 |송재영|로직 생성/배치 생성|
+|2024-02-05 |송재영|데이터 구조 변경 및 VECTORSTORE 생성 로직 변경|
+|2024-02-20 |송재영|조인 방법 변경 및 시트에서 리포트 셀 포맷 적용|
+|2024-04-04 |송재영|주간 -> 일간 업데이트로 변경|
+
+###### Source Data
+* [데이터서비스 개발팀 제공 openAPI](https://bighitcorp.atlassian.net/browse/WVI-611?focusedCommentId=379934)"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_meta',
+  'table_name' : 'wi_report', 
+  'service' : ""weverse"", #default (None)
+  'partition' : ['part_date']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'append', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+}"
+6,md,,just_heading,#### Main Query
+7,py,Get Data Using OpenAPI,code,"mport requests
+import pprint
+import json
+import os
+
+os.environ['WI_CLIENT_ID'] = dbutils.secrets.get(scope=""wev-analytics"", key=""wev-insight-client-id"")
+os.environ['WI_SECRET_KEY'] = dbutils.secrets.get(scope=""wev-analytics"", key=""wev-insight-secret-key"")
+
+# url 입력
+url = 'https://wvinsightapi.weverse.io/api/v1/open/reports?page=0&size=1000'
+
+# header 값 설정
+headers = {
+    ""X-Client-Id"" : os.environ['WI_CLIENT_ID'],
+    ""X-Secret-Key"" : os.environ['WI_SECRET_KEY']
+}
+
+# url로 데이터 불러오기
+response = requests.get(url, headers = headers)
+
+contents = response.text
+result = json.loads(contents)
+
+## result['message'] 가 success면 나머지 실행, 아니면 알림 후 task 바로 종료
+if result['message'] != 'success':
+    response = requests.post('https://slack.com/api/chat.postMessage', {
+            'token': dbutils.secrets.get(scope=""slack"", key=""token""),
+            'channel': '#da-monitor',
+            'icon_emoji': ':official_check:',
+            'username': 'Item Alert',
+            'text': 'Weverse Insight 리포트 메타 데이터 API 오류'
+        }
+    )
+    dbutils.notebook.exit('stop')
+else:"
+8,py,Get Sheet Data,code,"import datetime
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pyspark.sql.functions import col
+from pyspark.sql import functions as F
+
+try:
+  import gspread
+  import gspread_formatting as gf
+  from oauth2client.service_account import ServiceAccountCredentials
+except:
+  !pip install gspread
+  !pip install gspread-formatting
+  !pip install --upgrade oauth2client
+  import gspread
+  import gspread_formatting as gf
+  from oauth2client.service_account import ServiceAccountCredentials
+
+import pandas as pd
+import numpy as np
+
+def fill_up(l:list, n:int):
+    new_l = []
+    len_l = len(l)
+    for i in range(n):
+        new_l.append(l[i] if i < len_l else '')
+    return new_l
+
+# authrization
+scope = [
+  'https://www.googleapis.com/auth/drive'
+]
+json_file_name = '/dbfs/FileStore/tables/elite_elevator_388506_d4350aba3f9b.json'
+credentials = ServiceAccountCredentials.from_json_keyfile_name(json_file_name, scope)
+gc = gspread.authorize(credentials)
+base_url = ""https://docs.google.com/spreadsheets/d/1-BiXlQ7s0zkNwqenTPppXlTjIORQy7mTJ9MaMd8-cVw/edit#gid=324363187""
+base_doc = gc.open_by_url(base_url)
+ws = base_doc.worksheet(""배포 리포트 리스트"")
+
+num_of_reports = len(ws.col_values(5)) - 5
+sheet_data = ws.get(""A5:D"" + str(num_of_reports + 5))
+sheet_data = [fill_up(l, 4) for l in sheet_data]
+
+report_ids = spark.createDataFrame(data = sheet_data, schema=['_1', 'parent_report_title', 'report_id', 'parent_report_id'])"
+9,py,Data Cleansing,code,"from pyspark.sql.functions import regexp_extract, col
+from pyspark.sql import Window, functions as f
+from pyspark.sql.types import *
+import pandas as pd
+
+update_periods = {
+  ""Update Realtime"" : ""R""
+, ""Update Hourly"" : ""H""
+, ""Update Daily"" : ""D""
+, ""Update Weekly"" : ""W""
+, ""Update Monthly"" : ""M""
+, ""Update on Event"" : ""E""
+}
+
+def get_periods(s):
+    l = [update_periods.get(i.strip()) for i in s.split("","")]
+    return "", "".join([i for i in l if i != None])
+get_period_udf = f.udf(get_periods, StringType())
+
+df = spark.createDataFrame(pd.DataFrame(result['result']))
+
+# 컬럼 정리
+df = (
+    df.withColumn(""report_title"", df.reportName)
+    .withColumnRenamed(""reportId"", ""report_id"")
+    .withColumn(""categories"", f.array_join(df.categories, ', '))
+    .withColumn(""update_period"", get_period_udf(""categories""))
+    .withColumn(""i18n_report_title"", col(""i18n"").reportName)
+    .withColumn(""i18n_description"", col(""i18n"").description)
+).join(other = report_ids, on=['report_id'], how = 'left')
+df = df.withColumn(""parent_report_id"", when(df[""parent_report_id""] != '', df[""parent_report_id""]).otherwise(None))
+
+# final columns
+df_fin = df.select(
+      ""report_title""
+    , ""parent_report_title""
+    , ""report_id""
+    , ""parent_report_id""
+    , ""update_period""
+    , ""description""
+    , ""tags""
+    , ""url""
+    , ""categories""
+    , ""i18n_report_title""
+    , ""i18n_description""
+)
+df_fin = (
+    df_fin.withColumn(""part_date"", f.lit(key))
+    .withColumn(""run_timestamp"", f.current_timestamp())
+).filter(""update_period != ''"")
+
+display(df_fin)"
+10,md,,just_heading,#### Run
+11,py,Run Dataflow,code,"dflow = Dataflow(run_mode = run_mode, notifier = noti)
+dflow.run(dataframe = df_fin, table_info = table, option = option, buckets = ['databricks'])"
+12,py,Update Sheet,code,"num_of_reports = len(ws.col_values(5)) - 5
+prv_sheet_range = ""A5:K"" + str(num_of_reports + 5)
+print(""prv_sheet_range: "", prv_sheet_range)
+
+ws.batch_clear([prv_sheet_range])
+ws.format(""A4:K900"", {
+    ""textFormat"": {""fontSize"": 9, ""bold"" : True}, ""horizontalAlignment"": ""CENTER"",
+    ""backgroundColor"": {
+      ""red"": 255 - .01,
+      ""green"": 255 - .01,
+      ""blue"": 255 - .01
+    },
+    ""borders"":{
+      ""top"": {
+        ""style"": ""NONE""
+      },
+      ""bottom"": {
+        ""style"": ""NONE""
+      },
+      ""left"": {
+        ""style"": ""NONE""
+      },
+      ""right"": {
+        ""style"": ""NONE""
+      }
+    }
+  }
+)
+
+input_table = spark.read.table(""wev_prod.we_meta.wi_report"").filter(f""part_date = '{key}'"").select(
+  ""report_title""
+, ""parent_report_title""
+, ""report_id""
+, ""parent_report_id""
+, ""update_period""
+, ""url""
+, ""description""
+, ""tags""
+, ""categories""
+, ""part_date""
+, col(""run_timestamp"").cast('string')
+).toPandas().fillna("""")
+
+data_list = input_table.values.tolist()
+
+cur_sheet_range = ""A5:K"" + str(len(data_list) + 4)
+print(""cur_sheet_range: "", cur_sheet_range)
+ws.update(values = data_list, range_name = cur_sheet_range)
+ws.update(values = [[""report_title""
+                             ,	""report_title(외부 서비스 공개)""
+                             ,	""report_id""
+                             ,	""parent_report_id""
+                             ,	""주기""
+                             ,	""url""
+                             ,	""description""
+                             ,	""tags""
+                             ,	""categories""
+                             , 	""part_date""
+                             ,	""run_timestamp""]], range_name=""A4:K4"")
+ws.update(values = [[f""Update date: {key}""]], range_name = ""A3"")
+ws.set_basic_filter(""A4:K"" + str(len(data_list) + 4))"
+13,py,,code,"ws.format(""A4:K4"", {
+    ""textFormat"": {""fontSize"": 9, ""bold"" : True}, ""horizontalAlignment"": ""CENTER"",
+    ""backgroundColor"": {
+      ""red"": 255 - 204.0,
+      ""green"": 255 - 204.0,
+      ""blue"": 255 - 204.0
+    },
+  }
+)
+ws.format(""A4:K"" + str(len(data_list) + 4), {
+      ""textFormat"": {""fontSize"": 9, ""bold"" : False}, ""horizontalAlignment"": ""LEFT"",
+      ""borders"":{
+      ""top"": {
+        ""style"": ""SOLID""
+      },
+      ""bottom"": {
+        ""style"": ""SOLID""
+      },
+      ""left"": {
+        ""style"": ""SOLID""
+      },
+      ""right"": {
+        ""style"": ""SOLID""
+      }
+    }
+    }
+)
+ws.format(""A5:A"" + str(len(data_list) + 4), {
+    ""textFormat"": {""fontSize"": 8}, ""horizontalAlignment"": ""LEFT"",
+    ""backgroundColor"": {
+      ""red"": 255 - 159.0,
+      ""green"": 255 - 197.0,
+      ""blue"": 255 - 232.0
+    }
+  }
+)
+          
+ws.format(""B5:B"" + str(len(data_list) + 4), {
+    ""textFormat"": {""fontSize"": 8}, ""horizontalAlignment"": ""LEFT"",
+    ""backgroundColor"": {
+      ""red"": 255 - 208.0,
+      ""green"": 255 - 224.0,
+      ""blue"": 255 - 227.0
+    },
+  }
+)
+
+ws.format(""A4:K4"", {
+    ""textFormat"": {""fontSize"": 9, ""bold"" : True}, ""horizontalAlignment"": ""CENTER"",
+    ""backgroundColor"": {
+      ""red"": 255 - 204.0,
+      ""green"": 255 - 204.0,
+      ""blue"": 255 - 204.0
+    },
+  }
+)"
+14,md,,just_heading,#### Report Metadata Management
+15,py,,code,"import json
+try:
+    from slack import WebClient
+    from slack.errors import SlackApiError
+except:
+    !pip install slackclient
+    from slack import WebClient
+    from slack.errors import SlackApiError
+
+num_of_reports = len(ws.col_values(5)) - 5
+sheet_data = ws.get(""A5:F"" + str(num_of_reports + 5))
+sheet_data = [fill_up(l, 6) for l in sheet_data]
+
+reports_to_update = spark.createDataFrame(data = sheet_data, schema=['report_title', 'parent_report_title', 'report_id', 'parent_report_id', '_', 'url']).filter(\
+    ""parent_report_title = ''""
+).toPandas()
+
+if len(reports_to_update) > 0:
+    display(reports_to_update) ## 리포트 메타 데이터 업데이트 필요 대상 리포트들
+
+
+    blocks = []
+    blocks.append(json.loads(""""""{
+                ""type"": ""header"",
+                ""text"": {
+                    ""type"": ""plain_text"",
+                    ""text"": ""%s""
+                }
+            }""""""%(f""{key} 메타 입력 필요 대상 인사이트 리포트 목록""), strict=False)
+    )
+    blocks.append(json.loads(r""""""{
+                        ""type"": ""divider""
+                    }
+                """""")
+            )
+
+    for i,r in reports_to_update.iterrows():
+        blocks.append(json.loads(""""""{
+                ""type"": ""section"",
+                ""text"": {
+                    ""type"": ""mrkdwn"",
+                    ""text"": ""🧾 Report: *%s*""
+                }
+            }""""""%(r['report_title']), strict=False)
+        )
+        blocks.append(json.loads(r""""""{
+                ""type"": ""section"",
+                ""fields"" : [
+                    {
+                    ""type"":""mrkdwn"",
+                    ""text"": ""*🔢 report_id*\n%s""
+                    },
+                    {
+                    ""type"":""mrkdwn"",
+                    ""text"": ""*🔗 url*\n%s""
+                    }
+                ]
+            }""""""%(r['report_id'], r['url']), strict=False)
+        )
+    blocks.append(json.loads(r""""""{
+                        ""type"": ""divider""
+                    }
+                """""")
+            )
+    blocks.append(json.loads(r""""""{
+        ""type"": ""actions"",
+        ""elements"": [
+            {
+                ""type"": ""button"",
+                ""text"": {
+                    ""type"": ""plain_text"",
+                    ""text"": ""📝 입력하러 가기""
+                },
+                ""url"": ""%s""
+            }
+        ]
+    }""""""%(""https://docs.google.com/spreadsheets/d/1-BiXlQ7s0zkNwqenTPppXlTjIORQy7mTJ9MaMd8-cVw/edit#gid=222477627""), strict=False))
+
+    client = WebClient(token=slack_token)
+    response = client.chat_postMessage(
+                    token =  dbutils.secrets.get(scope=""slack"", key=""token""),
+                    channel = '#da-monitor',
+                    icon_emoji = ':official_check:',
+                    username = 'Item Alert',
+                    blocks = blocks
+                )"
+16,md,,just_heading,#### Appendix
+17,md,,just_heading,###### Create Table
+18,py,,code,"cre_q= """"""
+create or replace table wev_prod.we_meta.wi_report
+(
+  report_title          string            comment ""리포트 명""
+, parent_report_title   string            comment ""상위 리포트 명""
+, report_id             string            comment ""리포트 별 유니크 key 값""
+, parent_report_id      string            comment ""기본 리포트 key 값""
+, update_period         string            comment ""리포트 타입""
+, description           string            comment ""리포트 기본 설명""
+, tags                  string            comment ""리포트 tag들""
+, url                   string            comment ""리포트 url""
+, categories            string            comment ""iOS 로그 상태""
+, i18n_report_title     struct<en:string, ko:string, ja:string> comment ""다국어 값:리포트 명""
+, i18n_description      struct<en:string, ko:string, ja:string> comment ""다국어 값:리포트 설명""
+, part_date             string            comment ""적재 일자""
+, run_timestamp         timestamp         comment ""적재 당시 시간(UTC)""
+)
+partitioned by (part_date)
+comment '위버스 인사이트 리포트 메타 데이터'
+""""""
+
+# spark.sql(cre_q)"
+19,md,,just_heading,## Construct VectorStore
+20,py,,code,"!pip install --upgrade pip
+
+!pip install langchain
+!pip install tiktoken
+!pip install faiss-cpu
+
+!pip install openai --upgrade
+dbutils.library.restartPython()
+!pip install typing_extensions==4.11.0
+!pip install orjson --prefer-binary
+!pip install -U langchain-community "
+21,py,,code,"import openai as oa
+import os
+import pandas as pd
+from pyspark.sql import functions as f
+from pyspark.sql.functions import col
+import requests
+
+os.environ['OPENAI_API_KEY'] = dbutils.secrets.get(scope=""wev-analytics"", key=""chatGPT"")
+
+from langchain.text_splitter import TokenTextSplitter
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.vectorstores.faiss import FAISS"
+22,py,,code,"key = dbutils.widgets.get(""target_date"")
+chunk_size = 600
+chunk_overlap = 40
+
+input_table = spark.read.table(""wev_prod.we_meta.wi_report"").filter(f""part_date = '{key}' and description != ''"")
+input_table.createOrReplaceTempView(""report_table"")
+# display(input_table)
+
+target_reports = spark.sql(""""""
+with tmp as (
+  select a.report_id, a.report_title, a.parent_report_id, collect_set(b.report_id) as children
+  from report_table as a
+  left join report_table as b
+  on a.report_id = b.parent_report_id
+  group by 1, 2, 3
+)
+select *
+from tmp
+where size(children) != 0 or parent_report_id is null
+""""""
+)
+
+input_table = (input_table
+            .join(other = target_reports, on = ['report_id'])
+            .withColumn(""report_title_reg"", f.when(f.regexp_extract(input_table.report_title, r""\[.*\]\s*(.*)"", 1) == '', input_table.report_title).otherwise(f.regexp_extract(input_table.report_title, r""\[.*\]\s*(.*)"", 1)))
+            .withColumn(""report_title_en"", f.coalesce(col(""i18n_report_title"").en, f.lit(' ')))
+            .withColumn(""report_title_en"", f.when(f.regexp_extract(col(""report_title_en""), r""\[.*\]\s*(.*)"", 1) == '', col(""report_title_en"")).otherwise(f.regexp_extract(col(""report_title_en""), r""\[.*\]\s*(.*)"", 1)))
+            .withColumn(""report_name_full"", input_table.report_title)
+            .withColumn(""description_en"", f.coalesce(col(""i18n_description"").en, f.lit(' ')))
+            .withColumn('description_text', f.upper(
+                f.concat(\
+                      col(""report_title_reg"")\
+                    , col(""report_title_en"")\
+                    , ""tags""\
+                    , ""description""\
+                    , col(""description_en"")
+                    , ""categories"")
+                )\
+            )
+            
+            .withColumn(""description_text"", f.when(f.regexp_extract(""description_text"", r""\[.*\]\s*(.*)"", 1) == '', col(""description_text"")).otherwise(f.regexp_extract(""description_text"", r""\[.*\]\s*(.*)"", 1)))
+            .select(
+                  col(""report_title_reg"").alias('report_title')
+                , col(""report_title_en"")
+                , col(""report_name_full"")
+                , input_table.report_id
+                , input_table.parent_report_id
+                , input_table.update_period
+                , input_table.description
+                , col(""description_en"")
+                , input_table.tags
+                , input_table.url
+                , input_table.categories
+                , col(""description_text"")
+            )
+)
+display(input_table)"
+23,py,,code,"@f.udf('array<string>')
+def get_chunks(text):
+  text_splitter = TokenTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+  return text_splitter.split_text(text)
+
+chunked_inputs = (
+input_table
+    .withColumn('chunks', get_chunks('description_text')) # divide text into chunks
+    .drop('description_text')
+    .withColumn('num_chunks', f.expr(""size(chunks)""))
+    .withColumn('chunk', f.expr(""explode(chunks)""))
+    .drop('chunks')
+    .withColumnRenamed('chunk','text')
+)
+ 
+# display transformed data
+display(chunked_inputs)"
+24,py,,code,"# convert inputs to pandas dataframe
+inputs = chunked_inputs.toPandas()
+ 
+# extract searchable text elements
+text_inputs = inputs['text'].to_list()
+ 
+# extract metadata
+metadata_inputs = (
+    inputs
+        .drop('text', axis=1)
+        .to_dict(orient='records')
+  )
+print(""meta data:"", len(metadata_inputs)\
+  , ""\ntext data:"", len(text_inputs))
+
+## result['message'] 가 success면 나머지 실행, 아니면 알림 후 task 바로 종료
+try:
+  assert len(metadata_inputs) == len(text_inputs)
+except:
+  response = requests.post('https://slack.com/api/chat.postMessage', {
+            'token': dbutils.secrets.get(scope=""slack"", key=""token""),
+            'channel': '#da-monitor',
+            'icon_emoji': ':official_check:',
+            'username': 'Item Alert',
+            'text': 'Vector Store: Not Unique Document Error!'
+            })
+  dbutils.notebook.exit('stop')
+
+# identify embedding model that will generate embedding vectors
+embeddings = OpenAIEmbeddings(model='text-embedding-ada-002')
+ 
+# instantiate vector store object
+vector_store = FAISS.from_texts(
+    embedding=embeddings, 
+    texts=text_inputs, 
+    metadatas=metadata_inputs
+  )
+
+vector_store.save_local(folder_path='/dbfs/FileStore/download/wi_report_bot/vetor_store') # DBFS 로컬에 저장
+print(""Produced files: "", os.listdir('/dbfs/FileStore/download/wi_report_bot/vetor_store'))
+
+try:
+    dbutils.fs.cp('dbfs:/FileStore/download/wi_report_bot/vetor_store/', 's3://weverse-wireportbot-dataapne2/vector_store', recurse = True) # DBFS 로컬에 저장된 파일을 s3 버킷에 저장(PROD)
+    print(""Copy to S3 Prod Bucket complete\t\t"", ""location: s3://weverse-wireportbot-dataapne2/vector_store"")
+    dbutils.fs.cp('dbfs:/FileStore/download/wi_report_bot/vetor_store/', 's3://weverse-wireportbot-datadapne2/vector_store', recurse = True) # DBFS 로컬에 저장된 파일을 s3 버킷에 저장(DEV)
+    print(""Copy to S3 Prod Bucket complete\t\t"", ""location: s3://weverse-wireportbot-datadapne2/vector_store"")
+except:
+    print(""Copy to S3 Prod Bucket failed..."")
+    raise IOError
+
+"

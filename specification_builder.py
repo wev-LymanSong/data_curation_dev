@@ -5,8 +5,11 @@ from tools.utils.md_table_generator import MdTableGenerator
 from mdutils.mdutils import MdUtils
 from itertools import zip_longest
 from functools import wraps
+from datetime import datetime, timedelta
 import time
 import warnings
+import re
+
 warnings.filterwarnings("ignore")
 
 def convert_dtype(dtype):
@@ -36,7 +39,13 @@ def timer(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         start = time.time()
-        result = func(*args, **kwargs)
+        try:
+            result = func(*args, **kwargs)
+        except Exception as e:
+            error_message = str(e)
+            print(f"Error in {func.__name__}{'(' + args[1] + ')' if len(args) > 1 else ''}")
+            print(f"\t{error_message}")
+            return "None"
         end = time.time()
         elapsed_time = end - start
         # print(args)
@@ -52,18 +61,36 @@ class SpecificationBuilder(object):
     
     #class variables
     dag_task_df = StaticDataCollector.get_dag_task_df()
+    from_date = (datetime.today() - timedelta(days = 90)).strftime('%Y-%m-%d')
+    to_date = datetime.today().strftime('%Y-%m-%d')
+
     batch_df = StaticDataCollector.db_connector.get_batch_table(
-        from_date = '2024-08-01',
-        to_date = '2024-09-07',
+        from_date = from_date,
+        to_date = to_date,
         target_schema = "'we_mart', 'we_meta'",
         target_table_type = "'TABLE', 'VIEW'"
     )
 
     def __init__(self, target_table):
         
-        target_table_info = SpecificationBuilder.dag_task_df[SpecificationBuilder.dag_task_df['table_name'] == target_table].iloc[0] # take the first row in case of multiple tasks
-        self.TARGET_FIELD = target_table_info['field']
-        self.TARGET_DB    = target_table_info['db_name']
+        dag_rows = SpecificationBuilder.dag_task_df[SpecificationBuilder.dag_task_df['table_name'] == target_table]
+        batch_row = SpecificationBuilder.batch_df[SpecificationBuilder.batch_df['target_table_name'] == target_table]
+        
+        if dag_rows.empty and batch_row.empty:
+            raise ValueError(f"No information found for the target table: {target_table}")
+        elif dag_rows.empty: # No DAG for the target table
+            target_table_info = batch_row.iloc[0] # take the first row in case of multiple tasks
+            self.TARGET_DB = target_table_info['target_table_schema']
+            if self.TARGET_DB == 'we_mart':
+                self.TARGET_FIELD = 'we_stat' if target_table.startswith("stats") else 'we_mart'
+            else:
+                self.TARGET_FIELD = self.TARGET_DB
+        
+        else:
+            target_table_info = dag_rows.iloc[0] # take the first row in case of multiple tasks
+            self.TARGET_FIELD = target_table_info['field']
+            self.TARGET_DB    = target_table_info['db_name']
+        
         self.TARGET_TABLE = target_table
         self.mdFile = None
         
@@ -75,7 +102,12 @@ class SpecificationBuilder(object):
         self.desc_df, self.part_indices = self.sdc.get_table_schema()
 
         # Semantic DataFrames and info dicts: Get semantic data associated with the target table from SemanticInfoGenerator.
-        self.sig = SemanticInfoGenerator(self.TARGET_TABLE)
+        self.sig = SemanticInfoGenerator(
+            target_table=self.TARGET_TABLE,
+            dag_task_df = SpecificationBuilder.dag_task_df,
+            batch_df = SpecificationBuilder.batch_df,
+            gc = StaticDataCollector.gc_databricks
+        )
 
         # Initiate sepcification Features
         self.basic_info = None
@@ -86,15 +118,22 @@ class SpecificationBuilder(object):
         self.batch_info = None
         self.locations = None
         self.dep_table_list = None
-        self.dep_down_table_info = "No content."
+        # self.dep_down_table_info = "No content."
     
     @timer
     def collect_static_data(self):
         # BASIC INFO
         dag_items = SpecificationBuilder.dag_task_df[(SpecificationBuilder.dag_task_df["field"] == self.TARGET_FIELD) & (SpecificationBuilder.dag_task_df["table_name"] == self.TARGET_TABLE)]
-        dag_names = dag_items['dag_id'].values.tolist()
-        PRIORITY = "PRIMARY" if dag_names[0] in PRIMARY_DAG else "SECONDARY"
-        TABLE_TYPE = f"{self.TARGET_FIELD.split("_")[-1].upper()} {PRIORITY}"
+
+        if dag_items.empty:
+            dag_names = ["No DAG"]
+            PRIORITY = 'VIEW TABLE or NOT SCHEDULED'
+        else:
+            dag_names = dag_items['dag_id'].values.tolist()
+            PRIORITY = "PRIMARY" if dag_names[0] in PRIMARY_DAG else "SECONDARY"
+
+
+        TABLE_TYPE = f"{self.TARGET_FIELD.split('_')[-1].upper()} {PRIORITY}"
         PARTITIONED_BY = ", ".join([f"`{i}`" for i in self.desc_df.iloc[self.part_indices.item() + 2:]['col_name'].to_list()]) if len(self.part_indices) != 0 else " "
         CREATED_BY = COLLABORATOR_DICT[self.change_df.iloc[len(self.change_df) - 1]['Author']]
         LAST_UPDATED_BY = COLLABORATOR_DICT[self.change_df.iloc[0]['Author']]
@@ -139,17 +178,29 @@ class SpecificationBuilder(object):
 
         ## PIPELINE INFO
         ### BATCH INFO
-        if len(dag_items) > 1:
+        if dag_items.empty:
+            DAG = "`No DAG`"
+            UPDATE_INTERVAL = "N/A"
+            UPDATE_TYPE = 'N/A'
+        elif len(dag_items) > 1:
             DAG = ", ".join([f"`{dag}`" for dag in dag_names])
             UPDATE_INTERVAL = ", ".join(dag_items['batch_interval'].unique().tolist())
+            UPDATE_TYPE = self.settings['option']['mode'].upper() if self.settings is not None else " "
         else:
             DAG = f"`{dag_names[0]}`"
             UPDATE_INTERVAL = dag_items['batch_interval'].item()
-        UPDATE_TYPE = self.settings['option']['mode'].upper() if self.settings is not None else " "
+            UPDATE_TYPE = self.settings['option']['mode'].upper() if self.settings is not None else " "
         self.batch_info = (DAG, UPDATE_INTERVAL, UPDATE_TYPE)
         ### LOCATIONs
-        GITHUB = StaticDataCollector.gc_databricks.switch_table_dir_to_url(os.path.join(field2dir_dict[self.TARGET_FIELD], self.TARGET_TABLE))
-        if len(dag_items) > 1: # DAG가 여러개일 경우
+        try:
+            target_path = field2dir_dict[self.TARGET_FIELD]
+        except:
+            target_path = os.path.join(CODE_DIR, self.TARGET_FIELD)
+        GITHUB = StaticDataCollector.gc_databricks.switch_table_dir_to_url(os.path.join(target_path, self.TARGET_TABLE))
+        
+        if dag_items.empty:
+            AIRFLOW = " "
+        elif len(dag_items) > 1: # DAG가 여러개일 경우
             AIRFLOW = [f"[{dag}]({StaticDataCollector.gc_airflow.switch_dag_dir_to_url(dag)})" for dag in dag_items['dag_id'].tolist()]
         else: # DAG가 하나일 경우
             AIRFLOW = [StaticDataCollector.gc_airflow.switch_dag_dir_to_url(dag_items['dag_id'].item())]
@@ -173,11 +224,12 @@ class SpecificationBuilder(object):
             self.table_notice = self.sig.get_table_notice()
         elif target_section == 'HOW_TO_USE':
             self.how_to_use = self.sig.get_how_to_use()
-        elif target_section == 'DOWNSTREAM_TABLE_INFO':
-            self.dep_down_table_info = self.sig.get_downstream_table_info()
+        # elif target_section == 'DOWNSTREAM_TABLE_INFO':
+        #     self.dep_down_table_info = self.sig.get_downstream_table_info()
+            
     
     @timer
-    def build_mdfile(self):
+    def save_mdfile(self, target_dir):
         self.mdFile = MdUtils(file_name=self.TARGET_TABLE, title=f"{self.TARGET_DB}.{self.TARGET_TABLE}")
         ## BASIC INFO
         self.mdFile.new_header(level=1, title='BASIC INFO')
@@ -236,12 +288,12 @@ class SpecificationBuilder(object):
         self.mdFile.new_table(columns=len(dep_tl_header), rows=len(dep_tl_rows) + 1, text=dep_tl_header + sum(dep_tl_rows, []), text_align='left')
 
         ### DOWN TABLE INFO
-        self.mdFile.new_header(level=2, title='🐤 Downstream Tables Info')
-        self.mdFile.new_line(self.dep_down_table_info)
-        self.mdFile.new_line("---")
+        # self.mdFile.new_header(level=2, title='🐤 Downstream Tables Info')
+        # self.mdFile.new_line(self.dep_down_table_info)
+        # self.mdFile.new_line("---")
 
         # File save
-        os.chdir(SPEC_DIR)
+        os.chdir(target_dir)
         self.mdFile.create_md_file()
         os.chdir(BASE_DIR)
 
@@ -250,8 +302,8 @@ class SpecificationBuilder(object):
         print(f"Current Target Table:({self.self.TARGET_FIELD.upper()}) {self.TARGET_DB}.{self.TARGET_TABLE:<20}")
     
     @timer
-    def read_mdfile(self):
-        target_table_dir = os.path.join(SPEC_DIR, self.TARGET_TABLE + ".md").replace("\\", "/")
+    def read_mdfile(self, source_dir):
+        target_table_dir = os.path.join(source_dir, self.TARGET_TABLE + ".md").replace("\\", "/")
 
         with open(target_table_dir, "r", encoding="utf-8") as file:
             content = file.read()
@@ -299,18 +351,18 @@ class SpecificationBuilder(object):
         # DEPENDENCIES 섹션 파싱
         dependencies = sections['DEPENDENCIES']
         dep_table_list = None
-        dep_down_table_info = " "
+        # dep_down_table_info = " "
 
         if dependencies:
             dep_sections = re.split(r'##\s+', dependencies)
             for section in dep_sections:
                 if section.startswith('👨‍👩‍👧‍👦 Up/Downstream Table List'):
                     dep_table_list = section.split('\n', 1)[1].strip()
-                elif section.startswith('🐤 Downstream Tables Info'):
-                    try:
-                        dep_down_table_info = section.split('\n', 1)[1].strip()
-                    except:
-                        dep_down_table_info = " "
+                # elif section.startswith('🐤 Downstream Tables Info'):
+                #     try:
+                #         dep_down_table_info = section.split('\n', 1)[1].strip()
+                #     except:
+                #         dep_down_table_info = " "
 
         # PIPELINE INFO 섹션에서 locations 정보 추출
         locations = None
@@ -344,9 +396,9 @@ class SpecificationBuilder(object):
         else:
             self.locations = (keywords[0][1], [f"[{k[0]}]({k[1]})" for k in keywords[1:]])
         self.dep_table_list = MdTableGenerator.parse_markdown_table(dep_table_list)
-        self.dep_down_table_info = dep_down_table_info
+        # self.dep_down_table_info = dep_down_table_info
 
-# sb = SpecificationBuilder("wv_comm_user")
+# sb = SpecificationBuilder("wa_album")
 # sb.collect_static_data()
 # sb.generate_semantic_data("TABLE_NOTICE")
 # sb.generate_semantic_data("HOW_TO_USE")

@@ -1,0 +1,210 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.wv_client_log_
+2,md,,basic_info,"#### Basic Info
+* 클라이언트 활용을 편리하게 하기 위해 세션ID 부여, 액션 유형 컬럼 생성
+* Mart Primary
+* DAILY APPEND
+
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2023-10-12 |서혜인|마트생성|
+|2024-03-07 |서혜인|로그 수기보정 케이스 추가|
+|2024-03-13 |서혜인|page 파티션, action_id optimize 추가|
+|2024-06-27 |이현지|최적화|
+
+###### Source Tables
+* service_log.weverse_client_log"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'wv_client_log_base', 
+  'service' : 'weverse', #default (None)
+  'partition' : ['date_id', 'page_id']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'overwrite', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+  'delete' : True, #default (False)
+  'delete_key' : 'date_id', #default (None)
+  'error_level' : 0, #에러 발생 시 fail 처리하지 않음
+  'merge_schema' : True #default(False) # 신규 연계로그로 컬럼 추가되어도 바로 반영되도록 설정
+ }"
+6,md ,,etc, #### Main Query
+7,md,,just_heading,##### import data & setting
+8,py,,code,"spark.conf.set(""spark.sql.autoBroadcastJoinThreshold"" ,""-1"")
+
+from pyspark.sql import functions as f
+from pyspark.sql.functions import col, when, from_json, unix_timestamp
+from pyspark.sql.window import Window
+from datetime import date, datetime, timedelta
+
+q = f""""""select * from service_log.weverse_client_log where date_id = '{key}' """"""
+df = spark.sql(q)
+
+# 노출 정의 대상 페이지 확인용: 지난 7일간 노출이 한번이라도 잡힌 area 값 확인
+diff_day =7
+start_date = (datetime.strptime(key, '%Y-%m-%d') - timedelta(days = diff_day)).strftime('%Y-%m-%d')
+
+q_imp_area = f""""""select distinct regexp_extract(action_id, r'\.(.*?)\.') as imp_area from service_log.weverse_client_log where date_id between '{start_date}' and '{key}' and action_id like 'impression.%' """"""
+df_impr_area = spark.sql(q_imp_area)
+
+# comm_id 보정용
+q_post = f""""""select distinct post_id as post_id_y, community_id as comm_id_p from wev_prod.weverse2.community_content_community_post_relation""""""
+df_post = spark.sql(q_post)"
+9,md,,just_heading,##### define values
+10,py,,code,"# comm, contents 단위로 분석 필요한 페이지 정의
+page_by_comm = [
+#1번그룹
+""artistpedia"", ""artistpedia/profile"", ""artistpedia/link_list"", ""feed"", ""artist"", ""media"", ""live"", ""meida/media_cat_end"",  ""gnb/community"", ""media/new_media_end""
+, ""media/media_cat_end"", ""media/history_end"", ""media/history_edit_confirm"", ""media/reco_end"", ""media/fc_only_end"", ""media/package_cat_end""
+#2번그룹
+, ""post_end"", ""post_end/edit"", ""post_end/edit/setting"", ""post_end/viewer"", ""cmnt_list"", ""cmnt_end"", ""moment"", ""moment/edit"", ""fanletter/view_user"", ""fanletter/view_artist"", ""fanletter/viewer"", ""fanletter/editor_artist_list"", ""fanletter/editor"", ""fanletter/editor_template"", ""fanletter/editor_sticker"", ""fanletter/editor_photo"", ""media_end/video"", ""media_end/video_viewer"", ""media_end/image"", ""media_end/image_viewer"", ""live_end"", ""live_end/viewer"", ""live_end/finish"", ""live_end/chat_error""
+#3번그룹
+, ""profile"", ""profile/edit"", ""profile/following"", ""collection"", ""collection/badge_card"", ""collection_artist"", ""collection_book"", ""comm/more/notice"", ""notice"", ""notice/post"", ""comm/more/notice_end"", ""pop_up/comm_notice"", ""pop_up/notice"", ""join"", ""leave"", ""confirm/leave""
+]
+page_by_content = [""post_end"", ""post_end/viewer"", ""media_end/video"", ""media_end/video_viewer"", ""media_end/image"", ""media_end/image_viewer"", ""live_end"", ""live_end/viewer"", ""live_end/finish"", ""moment"", ""fanletter/view_user"", ""fanletter/view_artist"", ""fanletter/viewer"", ""cmnt_end"", ""notice/post"", ""comm/more/notice_end""]
+
+# 로그 변수 파싱 패턴 정의
+r_area = r'\.(.*?)\.'
+r_area_label = r'\.(.*?)$'
+
+# 파티션 정의 
+win_sess_1 = Window.partitionBy(""user_device_key"", ""date_id"").orderBy(""unix_log_timestamp"") 
+win_sess_2 = Window.partitionBy(""user_device_key"", ""date_id"", ""sess_seq"")
+
+win_1_page = Window.partitionBy(""sess_id"").orderBy(""log_timestamp"", ""s_receive_time"")
+win_2_page = Window.partitionBy(""sess_id"").orderBy(""sess_page_seq"") 
+
+win_bound = Window.partitionBy(""sess_id"").orderBy(""log_timestamp"", ""s_receive_time"").rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
+win_asc = Window.partitionBy(""sess_id"").orderBy(f.asc(""log_timestamp""), f.asc(""s_receive_time"")).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+win_desc = Window.partitionBy(""sess_id"").orderBy(f.desc(""log_timestamp""), f.desc(""s_receive_time"")).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+"
+11,md,,just_heading,##### data processing
+12,py,,code,"# step1 : device_id 보정
+dev_fill_req = df\
+        .where(df.user_device_id.isNull())\
+        .select(""user_id"")
+
+df_dev_fill = df\
+        .where(df.user_device_id.isNotNull())\
+        .join(dev_fill_req, on=['user_id'], how='inner')\
+        .select(""user_id"", ""device_type"", ""os_name"", ""os_version"", ""user_device_id"").drop_duplicates()\
+        .withColumnRenamed(""user_device_id"", ""device_id_fill"")
+
+df = df\
+        .join(df_dev_fill, on=['user_id', 'device_type', 'os_name', 'os_version'], how='left')\
+        .withColumn('device_id', f.expr(""""""case when user_device_id is null then device_id_fill else user_device_id end """"""))\
+        .withColumn(""post_id_fill"", f.expr(""""""coalesce(post_id, curr_post_id)""""""))
+
+# step2 : 로그 유형 + 페이지유형 컬럼 생성 + 오생성 데이터 보정 + comm_id 보정 (post)
+df = df\
+        .withColumn(""is_view"", f.expr(""""""case when action_id = 'view' then 1 else 0 end """"""))\
+        .withColumn(""is_impression"", f.expr(""""""case when action_id like 'impression.%' then 1 else 0 end """"""))\
+        .withColumn(""is_action"", f.expr(""""""case when is_view + is_impression = 0 then 1 else 0 end """"""))\
+        .withColumn(""area"",  f.regexp_extract(""action_id"", r_area, 1))\
+        .withColumn(""area_label"",  f.regexp_extract(""action_id"", r_area_label, 1))\
+        .withColumn(""page_id"",  f.expr(""""""case when page_id = 'artistpedia' and action_id = 'impression.art_cmnt.cmnt' then ""feed"" else page_id end """"""))\
+        .join(df_post, df.post_id_fill == df_post.post_id_y, 'left')\
+        .withColumn('comm_id_fill', f.when(df.community_id.isNull(), f.col('comm_id_p')).otherwise(f.col('community_id')))
+
+df = df\
+        .join(df_impr_area, df.area == df_impr_area.imp_area, how='left')\
+        .withColumn(""area_mod"",  f.expr(""""""case when area = 'my_comm' and action_id in ('impression.my_comm.reco_comm', 'click.my_comm.reco_comm') then ""my_comm_reco"" else area end """"""))\
+        .withColumn('is_imp_area', f.expr(""""""case when imp_area is not null and area != 'my_comm' then 1 else 0 end """"""))\
+        .withColumn('is_page_by_comm', f.when(f.col(""page_id"").isin(page_by_comm), 1).otherwise(0))\
+        .withColumn('is_page_by_content', f.when(f.col(""page_id"").isin(page_by_content), 1).otherwise(0))\
+        .withColumn('page_comm_id', f.expr(""""""case when is_page_by_comm = 1 and comm_id_fill is not null then concat(page_id , '|',  comm_id_fill )when is_page_by_comm = 1 and comm_id_fill is null then concat(page_id , '|NA') else page_id end """"""))
+
+# step3 : 세션 데이터 생성
+df = df\
+        .withColumn(""user_device_key"", f.expr(""""""case when device_id is null then user_id else device_id end """"""))\
+        .withColumn(""log_timestamp"", f.to_timestamp(f.col(""log_timestamp_kst"")))\
+        .withColumn(""unix_log_timestamp"", f.unix_timestamp(f.col(""log_timestamp"")))\
+        .withColumn(""is_new_sess"", when(f.lag(""log_timestamp"").over(win_sess_1) < (col(""log_timestamp"") - f.expr(""INTERVAL 30 MINUTES"")), 1).otherwise(0))\
+        .withColumn(""sess_seq"", f.sum(""is_new_sess"").over(win_sess_1) + 1)\
+        .withColumn(""sess_start_dt"", f.min(col(""log_timestamp"")).over(win_sess_2))\
+        .withColumn(""sess_id"", f.expr(""""""concat(string(date_format(sess_start_dt + interval '9' hour, 'yyyyMMddHHmmssSSS')) , '|',  user_device_key) """"""))\
+        .withColumn(""action_dur"", f.lead(""log_timestamp"").over(win_1_page).cast(""long"") - col(""log_timestamp"").cast(""long""))
+
+# step4 : 세션별 데이터 보정 + 작업용 컬럼 drop
+df = df\
+        .withColumn('platform', f.expr(""""""case when device_type = 'Mobile App' then os_name else device_type end """"""))\
+        .withColumn('platform_fill', f.last('platform', ignorenulls=True).over(win_bound))\
+        .withColumn('s_ctry_fill', f.last('s_user_country', ignorenulls=True).over(win_bound))\
+        .withColumn('app_lang_fill', f.last('app_language', ignorenulls=True).over(win_bound))\
+        .withColumn('user_id_fill_asc', f.last('user_id', ignorenulls=True).over(win_asc))\
+        .withColumn('user_id_fill_desc', f.last('user_id', ignorenulls=True).over(win_desc))\
+        .withColumn('user_id_fill', f.when(f.col(""user_id_fill_desc"").isNull(), f.col(""user_id_fill_asc"")).otherwise(f.col(""user_id_fill_desc"")))\
+        .withColumn(""user_sess_id"", f.expr(""""""case when user_id_fill is null then sess_id else concat(sess_id , '|',  user_id_fill) end """"""))\
+        .drop(""device_id_fill"", ""imp_area"", ""log_timestamp"", ""unix_log_timestamp"", ""is_new_sess"", ""sess_start_dt"", ""user_id_fill_asc"", ""user_id_fill_desc"", ""post_id_y"", ""comm_id_p"")\
+        .fillna(""NA"", subset=['platform_fill', 's_ctry_fill', 'app_lang_fill'])
+
+df.createOrReplaceTempView('log_data')"
+13,py,,code,"# step5 : 생성시간 컬럼, 추후 사용할 컬럼들 미리 생성
+# sess_page_seq, prev_page_1st, next_page_1st, prev_page_2nd, next_page_2nd
+query = """"""
+select *
+        , null as sess_page_seq
+        , null as prev_page_1st
+        , null as prev_page_2nd
+        , null as next_page_1st
+        , null as next_page_2nd
+        , now() + interval '9' hour as run_timestamp
+from log_data
+"""""""
+14,md,,just_heading,#### Run
+15,py,,code,"dflow = Dataflow(run_mode=run_mode, notifier=noti)
+dflow.run(dataframe=spark.sql(query), table_info=table, option=option, buckets=['databricks'])
+print(option)"
+16,md,,just_heading,#### Appendix
+17,py,,code,"# 기존 테이블에 컬럼만 추가되는 것이라 테이블 생성은 별도로 했고, 신규 컬럼의 데이터 type, comment만 작성함
+""""""
+, device_id   string  comment ""보정된 디바이스 Id""
+, is_view int comment ""view 액션 여부""
+, is_impression   int comment ""impression 액션 여부""
+, is_action   int comment ""그외(클릭, 스와이프 등) 액션 여부""
+, area    string
+, area_mod    string  comment ""수기조정 적용된 area명""
+, is_imp_area int comment ""노출 정의된 area 여부""
+, is_page_by_comm int comment ""커뮤별 분석이 필요한 페이지 여부""
+, is_page_by_content  int comment ""컨텐츠별 분석이 필요한 페이지 여부""
+, page_comm_id    string
+, user_device_key string comment ""세션 생성 기준으로 최종 사용된 key""
+, sess_seq    bigint comment ""일 내 세션 접속 순서""
+, sess_id string  
+, action_dur  bigint  comment ""다음 로그까지 (체류)시간""
+, platform    string  
+, platform_fill   string  comment ""세션별 공통 플랫폼""
+, s_ctry_fill string  comment ""세션별 공통 접속국가""
+, app_lang_fill   string  comment ""세션별 공통 앱언어""
+, user_id_fill    string 
+, post_id_fill    string 
+, comm_id_fill    string 
+, user_sess_id    string
+, sess_page_seq    bigint  comment ""세션 내 페이지 방문 순서""
+, prev_page_1st   string  comment ""직전 방문한 페이지명""
+, prev_page_2nd   string  comment ""전전에 방문한 페이지명""
+, next_page_1st   string  comment ""직후 방문한 페이지명""
+, next_page_2nd   string  comment ""이후 두번째로 방문한 페이지명""
+, run_timestamp timestamp   comment ""배치 일시""
+) 
+partitioned by (date_id)
+comment ""WV 클라이언트로그 전처리""
+""""""
+"

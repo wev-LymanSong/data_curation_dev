@@ -1,0 +1,202 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.wv_jelly_
+2,md,,basic_info,"#### Basic Info
+* 위버스 상품 결제 수단인 젤리 충전/사용/환뷸/환급/만료에 대한 데이터
+* mart data
+* DAILY Append
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2023-03-10 |송재영|마트생성/배치생성|
+|2023-05-10 |송재영|컬럼명 변경(pay_method => pay_system, market => pay_method)|
+|2024-07-03|송재영|we_user_compact => we_user로 변경|
+|2024-08-16|송재영|무상 적립 젤리 환불건의 경우 EXPIRE => REFUND로 타입 변경([관련 쓰레드](https://benxcorp.slack.com/archives/C03HXCA75KJ/p1723772053389699))|
+
+###### Source Tables
+* jelly.point_group
+* jelly.point
+* jelly.ledger
+* jelly.transaction
+* jelly.order_item
+* we_mart.we_jelly_charge
+* we_mart.we_user
+* we_mart.wv_user_ctry_history"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"import pyspark.sql.functions as f
+
+key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'wv_jelly_transaction', 
+  'service' : None, #default (None)
+  'partition' : ['part_date']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'append', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+}
+
+spark.sql(""set time zone 'Asia/Seoul'"")
+spark.sql(""use catalog 'wev_prod'"")"
+6,md ,,etc, #### Main Query
+7,py,CHARGE(temp view),code,"# spark.sql(f""""""
+# create or replace temp view charges as 
+# select bigint(user_id) as we_member_id
+# , charge_id
+# , b.id as jelly_id
+# , bigint(b.product_id)
+# , b.store_item_id
+# , b.product_name
+# , c.channel
+# , double(c.unit_price)
+# , double(c.selling_unit_price)
+# , a.wallet_type
+# , a.payment_system
+# , a.payment_id
+# , point
+# , timestamp(from_unixtime(a.create_at_ms/1000)) as create_at
+# , timestamp(from_unixtime(a.expire_at_ms/1000)) as expire_at
+# from jelly.transaction as a
+# left join jelly.point as b
+# on a.point_id = b.id
+# left join jelly.point_group as c
+# on b.group_id = c.id
+# where transaction_type = 'CHARGE'
+# and date(from_unixtime(a.create_at_ms/1000)) <= '{key}'
+# """""""
+8,py,COUNTRY,code,"spark.sql(f""""""
+create or replace temp view user_ctry as 
+select user_id, member_id, country, ip
+, case when row_number() over (partition by user_id order by created_at) = 1 then timestamp('2000-01-01') else created_at end as cre_dt
+, nvl(lead(created_at) over (partition by user_id order by created_at), timestamp('2999-12-31')) as next_cre_dt
+from we_mart.wv_user_ctry_history
+"""""")"
+9,py,MAIN,code,"def get_df(key_date):
+    df = spark.sql(f""""""
+    select 
+    -- USER INFO
+    CHG.we_member_id
+    , USER.wv_user_id
+    , CTRY.country as ctry_code
+
+    -- CHARGE, JELLY INFO
+    , CHG.jelly_id
+    , CHG.product_id
+    , CHG.jelly_store_item_id
+    , CHG.jelly_wallet_type
+    , CHG.jelly_unit_price
+    , CHG.jelly_selling_unit_price
+    , CHG.charge_id
+    , CHG.trx_cre_dt as charge_dt
+    , CHG.pay_method
+    , CHG.pay_system
+
+    -- TRANSACTION INFO
+    , LDG.transaction_id
+    , case when LDG.transaction_type = 'EXPIRE' and TRX.refund_id is not null then 'REFUND' else LDG.transaction_type end as trx_type
+    , timestamp(from_unixtime(TRX.create_at_ms/1000)) as trx_cre_dt
+    , timestamp(from_unixtime(LDG.create_at_ms/1000)) as ldg_cre_dt
+    , CHG.first_exp_dt
+    , timestamp(from_unixtime(LDG.expire_at_ms/1000)) as upd_exp_dt
+
+    -- IN AND OUT
+    , income, outcome
+
+    -- ORDER INFO
+    , ORD.transaction_id as ord_id
+    , ORD.product_id as ord_product_id
+    , ORD.store_item_id as ord_store_item_id
+    , ORD.ord_item_qty
+    , int(ORD.paid_amt/ORD.ord_item_qty) as product_sale_price
+    , int(ORD.paid_amt) as paid_jelly_amt
+    , ORD.pay_dt as pur_confirmed_dt
+    
+    -- WITHDRAW INFO
+    , case when TRX.transaction_type = 'WITHDRAW' then TRX.refund_id end as refund_id_of_withdraw
+
+    -- TABLE INFO
+    , string(date(timestamp(from_unixtime(LDG.create_at_ms/1000)))) as part_date
+    , current_timestamp() as run_timestamp
+
+    from jelly.ledger as LDG
+    left join we_mart.we_jelly_charge as CHG
+    on CHG.charge_id = LDG.charge_id
+
+    left join jelly.transaction as TRX
+    on LDG.transaction_id = TRX.transaction_id and LDG.transaction_type = TRX.transaction_type and LDG.user_id = TRX.user_id and LDG.wallet_type = TRX.wallet_type
+
+    left join we_mart.wv_order as ORD
+    on TRX.transaction_id = ORD.transaction_id and TRX.transaction_type = 'ORDER' and TRX.point = ORD.paid_amt
+
+    left join we_mart.we_user as USER
+    on LDG.user_id = USER.we_member_id and USER.part_date = '{key_date}'
+
+    left join user_ctry as CTRY
+    on timestamp(from_unixtime(LDG.create_at_ms/1000)) > CTRY.cre_dt and timestamp(from_unixtime(LDG.create_at_ms/1000)) <= CTRY.next_cre_dt and USER.wv_user_id = CTRY.user_id
+
+    where 1=1
+    and date(timestamp(from_unixtime(LDG.create_at_ms/1000))) = '{key_date}'
+    order by CHG.we_member_id, ldg_cre_dt
+    """""")
+    
+    return df"
+10,md,,just_heading,#### Run
+11,py,,code,"dflow = Dataflow(run_mode=run_mode, notifier=noti)
+dflow.run(dataframe=get_df(key), table_info=table, option=option, buckets=['databricks'])"
+12,md,,just_heading,#### Appendix
+13,md,,just_heading,##### create query
+14,py,,code,"cre_q = f""""""
+create or replace table we_mart.wv_jelly_transaction
+(
+    we_member_id	bigint	comment	""위버스 서비스 통합 ID""
+    , wv_user_id	bigint	comment	""위버스 유저 ID""
+    , ctry_code	string	comment	""거래 당시 접속 IP 기준 국가 정보""
+    , jelly_id	bigint	comment	""젤리 ID(jelly.point.id)""
+    , product_id	bigint	comment	""젤리 상품 ID(product.product.id)""
+    , jelly_store_item_id	string	comment	""인앱 결제용 스토어 상품 ID""
+    , jelly_wallet_type	string	comment	""젤리 유무료 여부(PAID: 유료 충전 젤리, FREE: 무료 지급 젤리)""
+    , jelly_unit_price	double	comment	""젤리 내부 단가""
+    , jelly_selling_unit_price	double	comment	""젤리 판매 단가""
+    , charge_id	string	comment	""젤리 충전 ID(=transaction_id)""
+    , charge_dt	timestamp	comment	""충전 일시(UTC)""
+    , pay_method	string	comment	""충전 마켓(스토어/위버스샵 여부)""
+    , pay_system	string	comment	""결제 수단""
+    , transaction_id	string	comment	""거래 ID""
+    , trx_type	string	comment	""거래 유형""
+    , trx_cre_dt	timestamp	comment	""거래 기준 생성일(UTC)""
+    , ldg_cre_dt	timestamp	comment	""원장 기준 생성일(UTC)""
+    , first_exp_dt	timestamp	comment	""첫 충전 시 만료 일시(UTC)""
+    , upd_exp_dt	timestamp	comment	""업데이트 된 만료 일시(환급으로 인한 만료일 변경시, UTC)""
+    , income	int	comment	""젤리 충전/환급에 의한 입수량""
+    , outcome	int	comment	""젤리 사용/환불/만료에 의한 유출량""
+    , ord_id	string	comment	""젤리로 상품 구매 시)구매 ID(=transaction_id)""
+    , ord_product_id	int	comment	""젤리로 상품 구매 시) 상품 고유 ID(product.product.id)""
+    , ord_store_item_id	string	comment	""젤리로 상품 구매 시) 상품의 스토어 상품 ID""
+    , ord_item_qty	int	comment	""젤리로 상품 구매 시) 상품 구매랑""
+    , product_sale_price	int	comment	""젤리로 상품 구매 시) 상품당 젤리 지불량""
+    , paid_jelly_amt	int	comment	""젤리로 상품 구매 시) 총 젤리 지불량""
+    , pur_confirmed_dt	timestamp	comment	""젤리로 상품 구매 시) 구매 확정 일시(UTC)""
+    , refund_id_of_withdraw	string	comment	""젤리 환불에 의한 젤리 환급시 환불 거래 ID(=transaction_id)""
+    , part_date	string	comment	""Partition 용 날짜 Key""
+    , run_timestamp	timestamp	comment	""데이터 적재 일시(UTC)""
+)
+partitioned by(part_date)
+comment ""젤리 거래 내역""
+""""""
+
+# spark.sql(cre_q)
+"

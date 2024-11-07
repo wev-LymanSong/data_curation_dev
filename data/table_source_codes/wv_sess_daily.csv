@@ -1,0 +1,204 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.wv_sess_daily
+2,md,,basic_info,"#### Basic Info
+* 세션(sess_id) + 유저(wv_user_id) + 커뮤니티(we_art_id) 별 방문 기록
+* Mart Primary
+* DAILY APPEND
+
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2022-09-15 |박상민|마트생성|
+|2022-09-27 |박상민|user 정보 we_user 기준으로 변경|
+|2022-11-01 |박상민|미가입 유저 방문 처리 (is_comm_user), user_ctry 로직 변경 |
+|2023-10-18 |박상민|we_user_compact 변경|
+|2024-07-03|송재영|we_user_compact => we_user로 변경|
+
+###### Source Tables
+* service_log.wv_server_log_base
+* weverse2.community_content_post
+* weverse2.community_content_common_notice
+* we_mart.we_user
+* we_mart.wv_comm_user
+* we_mart.we_artist
+* we_mart.ws_fc_user_history"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"from pyspark.sql import functions as f
+from pyspark.sql.window import Window
+
+key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'wv_sess_daily', 
+  'service' : 'weverse', #default (None)
+  'partition' : ['part_date']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'overwrite', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+  'delete' : True, #default (False)
+  'delete_key' : 'part_date' #default (None)
+ }"
+6,md ,,etc, #### Main Query
+7,md,,just_heading,##### import data
+8,py,,code,"# 서버로그
+q_log = f""""""select * from we_mart.wv_server_log_base where date_id = '{key}' """"""
+df_log = spark.sql(q_log)
+
+# post_id(comm_id 조인용)
+q_post = f""""""select distinct concat(shard_id,'-',post_local_id) as post_id_y, cast(get_json_object(data, '$.communityId') as bigint) as comm_id_p  from weverse2.community_content_post""""""
+df_post = spark.sql(q_post)
+
+# notice_id(comm_id 조인용)
+q_notice = f""""""select distinct id as notice_id_y, int(regexp_replace(parent_id, 'community-', '')) as comm_id_n from weverse2.community_content_common_notice""""""
+df_notice = spark.sql(q_notice)
+
+# 회원정보 
+q_user = f""""""select distinct wv_user_id as id, we_member_id as account_id from we_mart.we_user where part_date = '{key}' """"""
+df_user = spark.sql(q_user)
+
+# 커뮤니티 가입정보
+q_comm = f""""""select distinct comm_id as comm_id_y, wv_user_id as comm_user_id, art_indi_id, art_indi_type  from we_mart.wv_comm_user where part_date = '{key}' """"""
+df_comm = spark.sql(q_comm)
+
+# 아티스트 메타 
+q_art = f""""""select we_art_id, we_art_name, comm_id as comm_id_a from we_mart.we_artist """"""
+df_art = spark.sql(q_art)
+
+# 멤버십 가입정보 
+q_fc = f""""""select distinct we_art_id as we_art_id_f, we_member_id as we_member_id_f from we_mart.ws_fc_user_history where part_date = '{key}' """"""
+df_fc = spark.sql(q_fc)"
+9,md,,just_heading,##### main query
+10,py,,code,"# comm_id 복구 
+df = df_log
+df = df.join(df_post, df.post_id == df_post.post_id_y, 'left')
+df = df.withColumn('comm_id2', f.when(df.comm_id.isNull(), f.col('comm_id_p')).otherwise(None))
+df = df.join(df_notice, df.notice_id == df_notice.notice_id_y, 'left') 
+df = df.withColumn('comm_id3', f.when(df.comm_id.isNull(), f.col('comm_id_n')).otherwise(None))
+df = df.withColumn('comm_id', f.expr(""""""coalesce(comm_id, comm_id2, comm_id3)""""""))
+
+
+# 체류시간 생성 
+df = df.withColumn('sess_dur', f.unix_timestamp(f.col('sess_end_dt')) -  f.unix_timestamp(f.col('sess_start_dt')) + 1 )\
+        .withColumn('user_sess_dur', f.unix_timestamp(f.col('user_sess_end_dt')) -  f.unix_timestamp(f.col('user_sess_start_dt')) + 1 )\
+
+# user 정보 추가 
+df = df.join(df_user, df.user_id_fill == df_user.id, 'left') 
+df = df.withColumn('is_sess_login', f.expr(""""""case when user_id_fill is not null then 1 else 0 end""""""))
+df = df.withColumn('is_device_login', f.max('is_sess_login').over(Window.partitionBy(""user_info_device_id"")))
+                
+# community 회원정보 추가 
+df = df.join(df_comm, (df.comm_id == df_comm.comm_id_y) & (df.user_id_fill == df_comm.comm_user_id), 'left') 
+df = df.withColumn('comm_id', f.expr(""""""case when comm_user_id is null and post_id is null and notice_id is null then NULL else comm_id end""""""))
+df = df.withColumn('is_comm_user', f.expr(""""""case when comm_user_id is not null then 1 when comm_user_id is null and comm_id is not null then 0 end""""""))
+
+# we_artist
+df = df.join(df_art, (df.comm_id == df_art.comm_id_a), 'left') 
+ 
+# fc 
+df = df.join(df_fc, (df.we_art_id == df_fc.we_art_id_f) & (df.account_id == df_fc.we_member_id_f), 'left') 
+df = df.withColumn('is_fc', f.when(df.we_member_id_f.isNotNull(), 1).when(df.we_member_id_f.isNull() & df.account_id.isNotNull(), 0).otherwise(None))
+
+# user_ctry
+window_user = Window.partitionBy(""user_info_device_id"", ""date_id"").orderBy(f.asc('log_dt')).rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
+df = df.withColumn('device_user_id_fill', f.last('user_info_id', ignorenulls=True).over(window_user))
+df = df.withColumn('user_id_fill_2', f.expr(""""""coalesce(user_id_fill, device_user_id_fill, user_info_device_id)""""""))
+window_ctry = Window.partitionBy(""user_id_fill_2"").orderBy(f.col(""is_sess_login"").asc(), f.col(""sess_id"").asc()).rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
+df = df.withColumn('user_ctry', f.last('gcc', ignorenulls=True).over(window_ctry))
+window_ctry = Window.partitionBy(""user_id_fill"").orderBy(f.col(""log_dt"").asc()).rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
+df = df.withColumn('sess_ctry', f.last('gcc', ignorenulls=True).over(window_ctry))
+
+# 세션당 마지막 값으로 수정 
+win_ver = Window.partitionBy(""sess_id"").orderBy('log_dt').rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
+df = df.withColumn('app_ver', f.last('app_ver', ignorenulls=True).over(win_ver))
+df = df.withColumn('platform', f.last('platform', ignorenulls=True).over(win_ver))
+df = df.withColumn('os', f.last('os', ignorenulls=True).over(win_ver))
+
+# 정리
+df = df.select(f.col('date_id').cast('date').alias('key_date'), 
+        f.col('account_id').cast('int').alias('we_member_id'),
+        f.col('id').cast('int').alias('wv_user_id'),        
+        f.col('user_ctry'),
+        f.col('user_info_device_id').alias('device_id'),  
+        f.col('is_device_login'),                 
+        f.col('we_art_id'),
+        f.col('we_art_name'),
+        f.col('comm_id'),
+        f.col('is_comm_user'),
+        f.col('is_fc'),
+        f.col('art_indi_id'),
+        f.col('art_indi_type'),
+        f.col('sess_id'),
+        f.col('sess_ctry'),                                             
+        f.col('sess_start_dt'),
+        f.col('sess_end_dt'),
+        f.col('sess_dur'),
+        f.col('user_sess_id'),
+        f.col('is_sess_login'),                       
+        f.col('user_sess_start_dt'),
+        f.col('user_sess_end_dt'),    
+        f.col('user_sess_dur'),               
+        f.col('platform'),
+        f.col('os'),
+        f.col('app_ver'),
+        f.col('date_id').cast('string').alias('part_date'))\
+        .dropDuplicates()
+
+# 처리시간 
+df = df.withColumn('run_timestamp', f.current_timestamp())
+
+# 추출
+df.createOrReplaceTempView('output')
+query = f""""""select * from output"""""""
+11,md,,just_heading,#### Run
+12,py,,code,"dflow = Dataflow(run_mode=run_mode, notifier=noti)
+dflow.run(dataframe=spark.sql(query), table_info=table, option=option, buckets=['databricks'])
+print(option)"
+13,md,,just_heading,#### Appendix
+14,py,,code,"""""""
+create table we_mart.wv_sess_daily
+(
+key_date	date	comment ""방문일자""
+, we_member_id	int	comment ""account_id""
+, wv_user_id	int	comment ""위버스 회원 id""
+, user_ctry	string	comment ""접속국가""
+, device_id	string	comment ""기기id(브라우저id)""
+, we_art_id	int	comment ""아티스트id""
+, we_art_name	string	comment ""아티스트명""
+, comm_id	string	comment ""커뮤니티id""
+, is_comm_user	int	comment ""커뮤니티 가입자 여부""
+, is_fc	int	comment ""멤버십 여부""
+, art_indi_id	string	comment ""아티스트 멤버 id""
+, art_indi_type	string	comment ""아티스트 타입""
+, sess_id	string	comment ""로그시작일시(yyyyMMddHHmmssSSS)|user_info_device_id""
+, sess_start_dt	timestamp	comment ""세션id 최초일시(UTC)""
+, sess_end_dt	timestamp	comment ""세션id 최종일시(UTC)""
+, sess_dur	bigint	comment ""세션 체류 시간""
+, user_sess_id	string	comment ""session_id + user_id""
+, user_sess_start_dt	timestamp	comment ""user_sess_id 시작일시(UTC)""
+, user_sess_end_dt	timestamp	comment ""user_sess_id 종료일시(UTC)""
+, user_sess_dur	bigint	comment ""user_session 체류시간""
+, platform	string	comment ""플랫폼""
+, os	string	comment ""OS""
+, app_ver	string	comment ""app_ver""
+, part_date	string	comment ""part_date""
+, run_timestamp	timestamp	comment ""배치일시(UTC)""
+) 
+partitioned by (part_date)
+comment ""WV 일간 세션 정보""
+""""""
+"

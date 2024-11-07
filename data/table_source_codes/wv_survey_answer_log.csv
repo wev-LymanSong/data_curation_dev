@@ -1,0 +1,177 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.wv_survey_answer_log
+2,md,,basic_info,"#### Basic Info
+* 위버스 설문 응답 로그
+* WIKI : https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/3534979303/we+mart.wv+survey+answer+log
+
+###### history
+|date|contributor|comments|
+|----|----|----|
+|2023-05-24|데이터분석팀 사공재현|최초작성|
+|2023-06-20|데이터분석팀 사공재현|배치등록|
+|2024-01-16|데이터분석팀 사공재현|설문언어가 한국어가 없을 경우에 대한 로직변경|
+|2024-08-01|데이터분석팀 사공재현|설문 연령 응답로그 로직 수정|
+
+###### Source Tables
+* fanvoice_survey.old_user_answer(과거 로그)
+* fanvoice_survey.user_answer(현재 로그)
+* fanvoice_survey.question_lang 
+* fanvoice_survey.option_lang
+* weverseshop.survey_result
+"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"")
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'wv_survey_answer_log', 
+  'service' : None, #default (None)
+  'partition' : ['part_date']
+}
+option = {
+  'date' : key,
+  'format':'delta', #default (delta)
+  'mode':'overwrite', #default (append)
+  'period' : 'daily', #default (daily)
+  'error_level' : 0,
+  'noti' : True #default (True)
+}
+
+# set time zone to KST
+spark.sql(""set time zone 'Asia/Seoul'"")
+"
+6,md,,just_heading,#### Main Query
+7,py,,code,"# 과거 데이터 아카이브(설문 2번용)
+sql = f""""""
+    select *, timestamp(current_timestamp() + interval '9' hour) as run_timestamp, '{key}' as part_date 
+from(
+    select a.account_id as we_member_id, a.survey_info_id, b.question_number, REGEXP_REPLACE(b.question, '<[^>]*>|&nbsp;', '') as question, b.option_sort, b.option_label, a.number_value, a.boolean_value, a.string_value, a.url_value, timestamp(update_time/1000) as answer_time
+    from(
+        select *
+        from fanvoice_survey.old_user_answer
+        where survey_info_id = 2
+        ) a,
+        (
+        select a.survey_info_id
+        , a.question_number
+        , a.question
+        , b.option_sort
+        , b.option_label
+        from
+          (
+          select * 
+          from fanvoice_survey.question_lang 
+          where lang_code = 'ko'
+          ) a, 
+          (
+          select *
+          from fanvoice_survey.option_lang
+          where lang_code = 'ko'
+          ) b 
+        where a.survey_info_id = b.survey_info_id 
+        and a.question_number = b.question_number 
+        ) b
+    where a.survey_info_id = b.survey_info_id
+    and a.question_number = b.question_number
+    and a.option_sort = b.option_sort
+    and a.question_number in (1,2,3,4,18,19,20,53,54)
+) a
+""""""
+
+# 현재 적재중인 응답 데이터
+sql = f""""""
+    select *, timestamp(current_timestamp() + interval '9' hour) as run_timestamp, '{key}' as part_date 
+from(
+    select a.account_id as we_member_id, a.survey_info_id, b.question_number, REGEXP_REPLACE(b.question, '<[^>]*>|&nbsp;', '') as question, b.option_sort, b.option_label, a.number_value, a.boolean_value, a.string_value, a.url_value, timestamp(update_time/1000) as answer_time
+    from(
+        select *
+        from fanvoice_survey.user_answer
+        where 1=1
+        and date(created_at) = '{key}'
+        ) a,
+        (
+        select a.survey_info_id
+        , a.question_number
+        , a.question
+        , b.option_sort
+        , b.option_label
+        from
+          (
+          select * 
+          from fanvoice_survey.question_lang
+          ) a, 
+          (
+          select *
+          from fanvoice_survey.option_lang
+          ) b,
+          (
+          select distinct survey_info_id, case when array_contains(lang_code, 'ko') then 'ko' else lang_code[0] end as lang_code
+          from(
+                select survey_info_id, collect_set(lang_code) as lang_code
+                from wev_prod.fanvoice_survey.survey_lang
+                group by 1
+                ) a
+           ) c 
+        where a.survey_info_id = b.survey_info_id 
+        and a.question_number = b.question_number 
+        and a.survey_info_id = c.survey_info_id
+        and a.lang_code = b.lang_code
+        and a.lang_code = c.lang_code
+        ) b
+    where a.survey_info_id = b.survey_info_id
+    and a.question_number = b.question_number
+    and a.option_sort = b.option_sort
+) a
+"""""""
+8,md,,just_heading,#### Run
+9,py,,code,"b = Dataflow(run_mode=run_mode, notifier=noti)
+b.run(dataframe=spark.sql(sql), table_info=table, option=option, buckets=['databricks'])"
+10,md,,just_heading,#### 삭제 구문 추가
+11,py,,code,"# 직업
+job_query = f""""""
+    delete
+    from wev_prod.we_mart.wv_survey_answer_log
+    where question_number = 'demography-employment'
+    and option_sort = 1
+""""""
+spark.sql(job_query)
+
+# 연령
+age_query = f""""""
+    update wev_prod.we_mart.wv_survey_answer_log
+    set number_value = 0
+    where question_number = 'demography-year-month-of-birth'
+    and floor((date_format(date_trunc('month', '{key}'), 'yyyyMM') - number_value) / 100) < 16
+""""""
+spark.sql(age_query)"
+12,md,,just_heading,#### APPENDIX
+13,md,,just_heading,###### create query
+14,py,,code,"sql = """"""
+create or replace table we_mart.wv_survey_answer_log
+(
+    we_member_id bigint comment '통합 계정인 wemember의 ID, 주요 키',
+    survey_info_id int comment '설문ID',
+    question_number string comment '질문 번호',
+    question string comment '질문',
+    option_sort int comment '질문의 보기 ID',
+    option_label string comment '질문의 응답 항목',
+    number_value int comment '주관식 숫자형 답변',
+    boolean_value tinyint comment '선택형 답변',
+    string_value string comment '주관식 문자형 답변',
+    url_value string comment '업로드 미디어 경로',
+    answer_time timestamp comment '응답시간',
+    run_timestamp timestamp comment '데이터가 insert된 시간',
+    part_date string comment '데이터가 입력된 날짜, string이지만 partition key로 사용'
+) PARTITIONED BY(part_date)
+""""""
+# spark.sql(sql)
+"

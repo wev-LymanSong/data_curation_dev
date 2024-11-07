@@ -1,15 +1,11 @@
 from configurations import *
-from static_data_collector import StaticDataCollector
 from prompt_templates import *
 from tools.connectors.github_repo_connector import GithubConnector
 from tools.connectors.databricks_connector import DatabricksConnector, NOTEBOOK_PREFIX_PY, NOTEBOOK_PREFIX_SQL
 from tools.utils import table_utils as tu
 
-
-# from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-# import langchain_google_genai as genai
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAI
-from langchain_google_genai import GoogleGenerativeAIEmbeddings 
+# from langchain_google_genai import GoogleGenerativeAI
+from langchain_google_vertexai import VertexAI
 
 # from langchain_anthropic import ChatAnthropic
 from langchain.prompts import PromptTemplate
@@ -20,16 +16,14 @@ from langchain_core.documents import Document
 # from langchain_community.vectorstores.faiss import FAISS
 
 
-from langchain_community.retrievers import BM25Retriever
-from langchain.retrievers import EnsembleRetriever
+# from langchain_community.retrievers import BM25Retriever
+# from langchain.retrievers import EnsembleRetriever
 # from FaissMetaVectorStore import FaissMetaVectorStore # Custom 제작 메타 데이터 벡터스토어
 
 class SemanticInfoGenerator(object):
 
     # ============ Class Variables: 전체 재사용 가능한 데이터들
-    dag_task_df = StaticDataCollector.get_dag_task_df()
-    gc = GithubConnector(github_token=os.environ['GITHUB_TOKEN'], repo_name='databricks', branch='main', owner='benxcorp')
-    llm = GoogleGenerativeAI(model="gemini-1.5-flash", api_key=os.getenv("GOOGLE_AI_API_KEY"))
+    llm = VertexAI(model="gemini-1.5-flash")
     answer_pattern = r'<answer>(.*?)</answer>'
     req_ext_dataset_dict = tu.load_dictionary(os.path.join(REQ_DIR, '_dataset_dict.pkl'))
     req_ext_dataset = sorted(req_ext_dataset_dict['data'], key=lambda x: x['issue_id'], reverse= True)
@@ -58,11 +52,24 @@ class SemanticInfoGenerator(object):
             )
         )
     
-    def __init__(self, target_table):
-        target_table_info = SemanticInfoGenerator.dag_task_df[SemanticInfoGenerator.dag_task_df['table_name'] == target_table].iloc[0] # take the first row in case of multiple tasks
-        self.TARGET_FIELD = target_table_info['field']
-        self.TARGET_DB    = target_table_info['db_name']
+    def __init__(self, target_table, dag_task_df, batch_df, gc:GithubConnector=None):
+        dag_rows = dag_task_df[dag_task_df['table_name'] == target_table]
+        batch_row = batch_df[batch_df['target_table_name'] == target_table]
+        if dag_rows.empty: # Not DAG for the target table
+            target_table_info = batch_row.iloc[0] # take the first row in case of multiple tasks
+            self.TARGET_DB = target_table_info['target_table_schema']
+            if self.TARGET_DB == 'we_mart':
+                self.TARGET_FIELD = 'we_stat' if target_table.startswith("stats") else 'we_mart'
+            else:
+                self.TARGET_FIELD = self.TARGET_DB
+        
+        else:
+            target_table_info = dag_rows.iloc[0] # take the first row in case of multiple tasks
+            self.TARGET_FIELD = target_table_info['field']
+            self.TARGET_DB    = target_table_info['db_name']
+        
         self.TARGET_TABLE = target_table
+        self.gc = gc
 
         # ================== Data for context ========================
         ## df_str: TARGET_TABLE 의 소스코드 데이터
@@ -89,7 +96,7 @@ class SemanticInfoGenerator(object):
                 "notebook_code" : self.df_str,
                 "data_specification_documents" : "No related tables",
                 "general_guide" : GENERAL_GUIDE,
-                "template_document" : field2table_notice_template[self.TARGET_FIELD] 
+                "template_document" : field2table_notice_template[self.TARGET_FIELD] if self.TARGET_FIELD in field2table_notice_template.keys() else field2table_notice_template["we_mart"]
             }
         )
         return table_notice
@@ -104,7 +111,7 @@ class SemanticInfoGenerator(object):
             ext_samples += r['page_content']
 
         #### Downstream 테이블들 중 몇가지만 가져오기
-        ds_tables = SemanticInfoGenerator.gc.search_tables(target_table_name=self.TARGET_TABLE)
+        ds_tables = self.gc.search_tables(target_table_name=self.TARGET_TABLE)
         ds_tables = ds_tables[
             (ds_tables['table_name'].str != self.TARGET_TABLE + ".py") &
             (ds_tables['file_path'].str.split("/").str[-2].isin(["we_mart", "we_meta", "wi_view"]))
@@ -113,7 +120,7 @@ class SemanticInfoGenerator(object):
         sampled_ds_tables = tu.get_top_n_words(ds_tables, target_column = "table_name", query = self.TARGET_TABLE + ".py", exclude_self_reference = True)
         ds_tables_samples = ""
         for i, r in sampled_ds_tables.iterrows():
-            ds_tables_samples += f"\n\n=={r['table_name'].split(".")[0]}==\n\n"
+            ds_tables_samples += f"\n\n=={r['table_name'].split('.')[0]}==\n\n"
             with open(os.path.join(REPO_DIR, r['file_path']), "rb") as f:
                 source_code_cells = "".join([l.decode() for l in f.readlines()])
                 source_code_lang = 'PYTHON' if source_code_cells.startswith(NOTEBOOK_PREFIX_PY) else NOTEBOOK_PREFIX_SQL
@@ -138,9 +145,10 @@ class SemanticInfoGenerator(object):
         )
 
         return how_to_use
+    
     def get_downstream_table_info(self):
-        #### Downstream 테이블들 중 몇가지만 가져오기
-        ds_tables = SemanticInfoGenerator.gc.search_tables(target_table_name=self.TARGET_TABLE)
+        #### Downstream 테이블들 중 몇가지만 가져오기, 현재 사용 X
+        ds_tables = self.gc.search_tables(target_table_name=self.TARGET_TABLE)
         ds_tables = ds_tables[
             (ds_tables['table_name'].str != self.TARGET_TABLE + ".py") &
             (ds_tables['file_path'].str.split("/").str[-2].isin(["we_mart", "we_meta", "wi_view"]))
@@ -149,7 +157,7 @@ class SemanticInfoGenerator(object):
         sampled_ds_tables = tu.get_top_n_words(ds_tables, target_column = "table_name", query = self.TARGET_TABLE + ".py", exclude_self_reference = True)
         ds_tables_samples = ""
         for i, r in sampled_ds_tables.iterrows():
-            ds_tables_samples += f"\n\n=={r['table_name'].split(".")[0]}==\n\n"
+            ds_tables_samples += f"\n\n=={r['table_name'].split('.')[0]}==\n\n"
             with open(os.path.join(REPO_DIR, r['file_path']), "rb") as f:
                 source_code_cells = "".join([l.decode() for l in f.readlines()])
                 source_code_lang = 'PYTHON' if source_code_cells.startswith(NOTEBOOK_PREFIX_PY) else NOTEBOOK_PREFIX_SQL

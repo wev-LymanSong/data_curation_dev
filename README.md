@@ -34,7 +34,7 @@ data_curation
 │       ├── parser_utils.py
 │       └── table_utils.py
 ├── configurations.py
-├── editor_main.py
+├── main.py
 ├── prompt_templates.py
 ├── requirements.txt
 ├── semantic_info_generator.py

@@ -1,0 +1,271 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.wv_server_log_
+2,md,,basic_info,"#### Basic Info
+* 서버로그 활용을 편리하게 하기 위해 세션ID 부여, url/params 파싱
+* Mart Primary
+* DAILY APPEND
+
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2022-09-06 |박상민|마트생성|
+|2022-09-16 |박상민|user_sess_id 생성|
+|2022-10-05 |박상민|params _ojbject 대응, chat 관련 변수 파싱 추가  |
+|2022-10-17 |박상민|log_dt produce_timestamp -> log_timestamp 로 변경 |
+|2022-11-01 |박상민|log_dt  log_timestamp -> unix로 변경 |
+|2022-11-20 |박상민| 로그아웃 상태의 경우 user_id_fill을 직전 id 로 추가  |
+|2024-02-22 |박상민| TV OS 구분로직 추가, app_ver 파싱로직 수정  |
+
+###### Source Tables
+* service_log.weverse_server_log"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"from pyspark.sql import functions as f
+from pyspark.sql.functions import col, when, from_json, from_utc_timestamp
+from pyspark.sql.window import Window
+
+key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'wv_server_log_base', 
+  'service' : 'weverse', #default (None)
+  'partition' : ['date_id']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'overwrite', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+  'delete' : True, #default (False)
+  'delete_key' : 'date_id' #default (None)
+ }"
+6,md ,,etc, #### Main Query
+7,md,,just_heading,##### import data
+8,py,,code,"q = f""""""select * from service_log.weverse_server_log where date_id = '{key}' """"""
+df = spark.sql(q)"
+9,md,,just_heading,##### define values
+10,py,,code,"# 로그 변수 파싱 패턴 정의
+r_exp_comm_1 = '(\/community\-+[0-9]{1,3})'
+r_exp_comm_2 = '\/community\-'
+r_exp_post_1 = '(post\-+[0-9]*\-+[0-9]*)'
+r_exp_post_2 = 'post\-'
+r_exp_ver_1 = 'app;\s?[0-9]*\.+[0-9]*\.+[0-9]*'
+r_exp_ver_2 = 'weverse;\s?[0-9]*\.+[0-9]*\.+[0-9]*'
+r_exp_notice_1 = '(\/notice\-+[0-9]*)'
+r_exp_notice_2 = '\/notice\-'
+r_exp_chat = '.*/chat-([^&]*)/.'
+
+# 파티션 정의 
+win_1 = Window.partitionBy(""user_info_device_id"", ""date_id"").orderBy(""unix_log_timestamp"")
+win_2 = Window.partitionBy(""user_info_device_id"", ""date_id"", ""sess_seq"")
+win_3a = Window.partitionBy(""sess_id"").orderBy(f.desc('unix_log_timestamp')).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+win_3b = Window.partitionBy(""sess_id"").orderBy(f.asc('unix_log_timestamp')).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+win_4 = Window.partitionBy(""sess_id"", ""user_id_fill"")"
+11,md,,just_heading,##### data processing
+12,py,,code,"# step1 
+df = df\
+        .withColumn(""log_dt"", f.to_timestamp((f.col(""unix_log_timestamp"")/1000)))\
+        .withColumn('request', f.when(f.get_json_object(col(""params""), '$._request_body').isNull(), f.get_json_object(col(""params""), '$.request_body')).otherwise(f.get_json_object(col(""params""), '$._request_body')))\
+        .withColumn('method', f.when(f.get_json_object(col(""params""), '$._method').isNull(), f.get_json_object(col(""params""), '$.method')).otherwise(f.get_json_object(col(""params""), '$._method')))\
+        .withColumn('gcc', f.when(f.get_json_object(col(""params""), '$._gcc').isNull(), f.get_json_object(col(""params""), '$.gcc')).otherwise(f.get_json_object(col(""params""), '$._gcc')))\
+        .withColumn('language', f.get_json_object(col(""params""), '$.language'))\
+        .withColumn('consumer_id', f.when(f.get_json_object(col(""params""), '$._consumer_id').isNull(), f.get_json_object(col(""params""), '$.consumer_id')).otherwise(f.get_json_object(col(""params""), '$._consumer_id')))\
+        .withColumn('provider_id', f.when(f.get_json_object(col(""params""), '$._provider_id').isNull(), f.get_json_object(col(""params""), '$.provider_id')).otherwise(f.get_json_object(col(""params""), '$._provider_id')))\
+        .withColumn('platform_id', f.get_json_object(col(""params""), '$.platform'))\
+        .withColumn('os_id', f.get_json_object(col(""params""), '$.os'))\
+        .withColumn('wpf', f.get_json_object(col(""params""), '$.wpf'))\
+        .withColumn('infra_video_id', f.get_json_object(col(""params""), '$.vid'))\
+        .withColumn(""is_join"", f.when(col(""url"").rlike(""/join""), 1).otherwise(None))\
+        .withColumn(""is_leave"", f.when(col(""url"").rlike(""/leave""), 1).otherwise(None))\
+        .withColumn(""user_info_id"", f.when(col(""user_info_id"") != 0, col(""user_info_id"")).otherwise(None))\
+        .withColumn('ver_1', f.regexp_extract( f.regexp_extract('user_info_user_agent', r_exp_ver_1, 0), '[0-9]*\.+[0-9]*\.+[0-9]*', 0))\
+        .withColumn('ver_2', f.regexp_extract( f.regexp_extract('user_info_user_agent', r_exp_ver_2, 0), '[0-9]*\.+[0-9]*\.+[0-9]*', 0))
+
+
+# step1 
+df = df\
+        .withColumn('user_info_device_id', when((col(""user_info_device_id"").isNull()) & ( col(""consumer_id"") == 'tvApp'), f.expr(""""""concat(""U_"", user_info_user_key)"""""")).otherwise(col('user_info_device_id')))\
+        .withColumn('post_id_1', f.regexp_replace(f.regexp_extract('url', r_exp_post_1, 0), r_exp_post_2, """"))\
+        .withColumn('post_id_2', f.get_json_object(col(""request""), '$.postId'))\
+        .withColumn('comm_id_1', f.regexp_replace(f.regexp_extract('url', r_exp_comm_1, 0), r_exp_comm_2, """") )\
+        .withColumn('comm_id_2', f.get_json_object(col(""request""), '$.communityId'))\
+        .withColumn('notice_id', f.regexp_replace(f.regexp_extract('url', r_exp_notice_1, 0), r_exp_notice_2, """") )\
+        .withColumn('body', f.get_json_object(col(""request""), '$.body'))\
+        .withColumn('media_type', f.get_json_object(col(""request""), '$.mediaType'))\
+        .withColumn('media_time', f.get_json_object(col(""request""), '$.time'))\
+        .withColumn('video_id', f.get_json_object(col(""request""), '$.videoId'))\
+        .withColumn('video_session_id', f.get_json_object(col(""request""), '$.sessionId'))\
+        .withColumn('section_type', f.get_json_object(col(""request""), '$.sectionType'))\
+        .withColumn('is_product', f.get_json_object(col(""request""), '$.hasProduct'))\
+        .withColumn('is_hide_from_artist', f.get_json_object(col(""request""), '$.hideFromArtist'))\
+        .withColumn('is_fc_only', f.get_json_object(col(""request""), '$.membershipOnly'))\
+        .withColumn('chat_id', f.regexp_extract('url', r_exp_chat, 1))\
+        .withColumn('chat_msg_count', f.get_json_object(col(""request""), '$.messageCount').cast(""int""))\
+        .withColumn('chat_msg_list', f.get_json_object(col(""request""), '$.messageList'))\
+
+# step3 
+df = df\
+        .where(df.user_info_device_id.isNotNull())\
+        .withColumn(""is_new_sess"", when(f.lag(""log_dt"").over(win_1) < (col(""log_dt"")  - f.expr(""INTERVAL 30 MINUTES"")), 1).otherwise(0))\
+        .withColumn(""post_id"", f.expr(""""""nvl(case when post_id_1 != """" then post_id_1 else null end , post_id_2)""""""))\
+        .withColumn(""comm_id"", f.expr(""""""nvl(case when comm_id_1 != """" then comm_id_1 else null end , comm_id_2)""""""))\
+        .withColumn(""notice_id"", f.expr(""""""case when notice_id != """" then notice_id else null end""""""))\
+        .withColumn(""app_ver"", f.expr(""""""nvl(case when ver_1 != """" then ver_1 else null end, case when ver_2 != """" then ver_2 else null end)""""""))\
+
+# step4
+df = df\
+        .withColumn(""sess_seq"", f.sum(""is_new_sess"").over(win_1) + 1)\
+        .withColumn(""sess_start_dt"", f.min(col(""log_dt"")).over(win_2))\
+        .withColumn(""sess_end_dt"", f.max(col(""log_dt"")).over(win_2))\
+        .withColumn('platform', f.expr(''' case when upper(provider_id) = ""WEVAPP"" and upper(os_id) in ('ANDTV','APPLETV','FIRETV','TIZEN','WEBOS') then ""TV""
+                                                when upper(consumer_id) in ('TVAPP','TVOSAPP') then ""TV""
+                                                 when upper(provider_id) = ""WEVAPP"" and upper(consumer_id) not in ('TVAPP','TVOSAPP') then ""APP""
+                                                 when upper(wpf) = ""PC"" then ""PC"" when upper(wpf) = ""MWEB"" then ""MWEB""
+                                                 end'''))\
+        .withColumn('os', f.expr('''case when upper(consumer_id) = ""TVOSAPP"" then ""TVOS""
+                                         when upper(consumer_id) = ""TVAPP"" then nvl(upper(os_id), ""TV"")
+                                         else upper(platform_id) end''')) 
+# step5
+df = df\
+        .withColumn(""sess_id"", f.expr(""""""concat(string(date_format(sess_start_dt + interval '9' hour, 'yyyyMMddHHmmssSSS')) , '|',  user_info_device_id) """"""))
+
+# step6
+df = df\
+        .withColumn('user_id_fill_a', f.last('user_info_id', ignorenulls=True).over(win_3a))\
+        .withColumn('user_id_fill_b', f.last('user_info_id', ignorenulls=True).over(win_3b))
+
+# step6
+df = df\
+        .withColumn('user_id_fill', f.when(f.col(""user_id_fill_a"").isNull(), f.col(""user_id_fill_b"")).otherwise(f.col(""user_id_fill_a"")) )
+
+
+# step7
+df = df\
+        .withColumn(""user_sess_id"", f.expr(""""""case when user_id_fill is null then sess_id else concat(sess_id , '|',  user_id_fill ) end """"""))\
+        .withColumn(""user_sess_start_dt"", f.min(col(""log_dt"")).over(win_4))\
+        .withColumn(""user_sess_end_dt"", f.max(col(""log_dt"")).over(win_4))
+
+df.createOrReplaceTempView('log_data')"
+13,md,,just_heading,##### select query
+14,py,,code,"query = f""""""
+select
+date_id
+, hour
+, log_dt
+, user_info_user_key
+, sess_seq
+, sess_id
+, sess_start_dt
+, sess_end_dt
+, user_sess_id
+, user_sess_start_dt
+, user_sess_end_dt
+, user_info_id 
+, user_info_device_id
+, platform
+, os  
+, app_ver
+, user_id_fill 
+, user_info_status
+, user_info_ip_address
+, user_info_locale
+, user_info_country
+, topic 
+, method
+, gcc
+, language 
+, consumer_id 
+, provider_id 
+, platform_id 
+, wpf 
+, is_join
+, is_leave
+, post_id
+, comm_id
+, notice_id 
+, body
+, media_type
+, media_time
+, video_id
+, video_session_id
+, section_type
+, is_product
+, is_hide_from_artist
+, is_fc_only
+, chat_id
+, chat_msg_count
+, chat_msg_list
+, url
+, params
+, user_info_user_agent
+, current_timestamp() as run_timestamp
+from log_data
+""""""
+"
+15,md,,just_heading,#### Run
+16,py,,code,"dflow = Dataflow(run_mode=run_mode, notifier=noti)
+dflow.run(dataframe=spark.sql(query), table_info=table, option=option, buckets=['databricks'])
+print(option)"
+17,md,,just_heading,#### Appendix
+18,py,,code,"""""""
+create table we_mart.wv_server_log_base
+(
+date_id	string	comment ""date_id(KST)""
+, hour	string	comment ""hour(KST)""
+, log_dt	timestamp	comment ""로그 produce_time (UTC)""
+, user_info_user_key	string	
+, sess_id	string	comment ""로그시작일시(yyyyMMddHHmmssSSS)|user_info_device_id""
+, sess_seq	bigint	comment """"
+, sess_start_dt	timestamp	comment ""세션id 최초일시(UTC)""
+, sess_end_dt	timestamp	comment ""세션id 최종일시(UTC)""
+, user_info_id	string	
+, user_info_device_id	string	
+, platform	string	comment ""접속 플랫폼""
+, os	string	comment ""접속 OS""
+, app_ver	string	comment ""APP ver(user_agent)""
+, user_info_status	string	
+, user_info_ip_address	string	
+, user_info_locale	string	
+, user_info_country	string	
+, topic	string	comment ""parmas""
+, method	string	comment ""parmas""
+, gcc	string	comment ""parmas""
+, language	string	comment ""parmas""
+, consumer_id	string	comment ""parmas""
+, provider_id	string	comment ""parmas""
+, platform_id	string	comment ""parmas""
+, wpf	string	comment ""parmas""
+, is_join	int	comment ""url""
+, is_leave	int	comment ""url""
+, post_id	string	comment ""nvl(url, params)""
+, comm_id	string	comment ""nvl(url, params)""
+, notice_id	string	comment ""url""
+, body	string	comment ""parmas""
+, media_type	string	comment ""parmas""
+, media_time	string	comment ""parmas""
+, video_id	string	comment ""parmas""
+, video_session_id	string	comment ""parmas""
+, section_type	string	comment ""parmas""
+, is_product	string	comment ""parmas""
+, is_hide_from_artist	string	comment ""parmas""
+, is_fc_only	string	comment ""parmas""
+, url	string	
+, params	string	
+, user_info_user_agent	string	
+, run_timestamp	timestamp	comment ""배치일시(UTC)""
+) 
+partitioned by (date_id)
+comment ""WV 서버로그 전처리""
+""""""
+"

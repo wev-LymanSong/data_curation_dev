@@ -1,0 +1,351 @@
+,cell_type,cell_title,role,codes
+1,md,,basic_info,"### we_mart.wv_live_play
+#### Basic Info
+* LIVE 재생 서버로그 마트
+* MART PRIMARY
+* DAILY OVERWRITE
+* part_key = LIVE 시작일 기준
+
+
+###### history
+|date|contributor|comments|
+|----|----|----|
+|2023-03-06|데이터분석팀 이현지|create mart table|
+|2024-03-19|데이터분석팀 이현지|FC중복가입 대응|
+|2024-04-24|데이터분석팀 이현지|합동라이브 항목 추가|
+|2024-06-04|데이터분석팀 이현지|is_first_wv_join 수정|
+
+
+###### Source Tables
+* we_mart.wv_server_log_base
+* we_mart.wv_live
+* we_mart.we_artist
+* weverse2.user_"
+2,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+3,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"")
+
+noti = {
+    'channel' : channel,
+    'token' : slack_token
+}
+
+option = {
+    'date' : key, 
+    'format':'delta',
+    'mode': 'overwrite',
+    'period': 'daily',
+    'noti' : True,
+    'delete' : True,
+    'delete_key' : 'part_date'
+}
+
+table = {
+    'database' : 'we_mart',
+    'table_name' : 'wv_live_play', 
+    'service' : 'weverse',
+    'partition' : ['part_date']
+}"
+4,md ,,etc, ##### Main
+5,py,,code,"# live list key_date
+
+keydates = spark.sql(f'''
+select distinct min(date(start_dt)) as key1, max(date(start_dt)) as key2
+from we_mart.wv_live
+where date(start_dt) = '{key}' or date(end_dt) = '{key}'
+and is_from_vlive = 0
+and status <> 'CANCELED'
+''').collect()
+
+key1 = keydates[0]['key1'].strftime('%Y-%m-%d')
+key2 = keydates[0]['key2'].strftime('%Y-%m-%d')
+
+
+# FC user
+
+q_fc = spark.sql(f'''
+select 
+ord_sheet_num
+, we_member_id
+, we_art_id
+, shop
+, fc_id
+, min(create_dt) as create_dt
+, min(expire_dt) as expire_dt
+from we_mart.ws_fc_user_history
+where 1=1
+and ord_status not in ('PAYMENT_FAILED')
+and is_cx_by_restore = 0
+and part_date between date('{key1}') and date('{key2}')
+group by 1,2,3,4,5
+''')
+q_fc.createOrReplaceTempView('fc')"
+6,py,,code,"q = f'''
+select *  except(u_num, d_num)
+from (
+
+    select a.*
+    , case when date(b.comm_user_first_dt) between date(a.start_dt) and date(a.tmp_end_dt) then 1 else 0 end as is_first_comm_join
+    , case when date(b.comm_user_cre_dt) between date(a.start_dt) and date(a.tmp_end_dt) then 1 else 0 end as is_comm_join
+    , case when date(b.comm_user_cre_dt) <= date(a.tmp_end_dt) then 1 else 0 end as is_comm_user
+    , case when coalesce(c.we_member_id, d.we_member_id, e.we_member_id) is not null then 1 else 0 end as is_fc
+    , timestamp(current_timestamp() + interval '9' hour)  as run_timestamp
+
+    from ( 
+        select
+        part_date
+        , date_id
+        , hour
+        , minute
+        , datetime
+        , we_member_id
+        , wv_user_id
+        , device_id
+        , platform
+        , os
+        , gcc as ctry_code
+        , post_id
+        , video_id
+        , start_dt
+        , end_dt
+        , tmp_end_dt
+        , we_art_id
+        , comm_id
+        , is_fc_only
+        , is_late
+        , is_first_wv_join
+        , is_joint_live
+        , guest_joint_seq
+        , max(case when is_join > 0 then 1 end) as is_join
+        , max(case when is_leave > 0 then 1 end) as is_leave
+        , max(u_join_first) as u_join_first
+        , max(u_leave_last) as u_leave_last
+        , max(d_join_first) as d_join_first
+        , max(d_leave_last) as d_leave_last
+        , sum(case when is_late = 1 then 0 else 1 end) over(partition by post_id, wv_user_id) as u_num
+        , sum(case when is_late = 1 then 0 else 1 end) over(partition by post_id, device_id) as d_num
+        , sum(is_join) as join_cnt
+        , sum(is_leave) as leave_cnt
+        , sum(case when url like '%join' and u_post_url like '%leave' then to_unix_timestamp(u_leave_dt) - to_unix_timestamp(log_dt) end) as u_sum_play_time
+        , sum(case when url like '%join' and d_post_url like '%leave' then to_unix_timestamp(d_leave_dt) - to_unix_timestamp(log_dt) end) as d_sum_play_time
+
+        from (
+            select *
+            , max(u_join) over(partition by post_id, wv_user_id, url, date_id, hour, minute) as u_join_first
+            , max(u_leave) over(partition by post_id, wv_user_id, url, date_id, hour, minute) as u_leave_last
+            , max(d_join) over(partition by post_id, device_id, url, date_id, hour, minute) as d_join_first
+            , max(d_leave) over(partition by post_id, device_id, url, date_id, hour, minute) as d_leave_last
+            , lead(log_dt) over(partition by post_id, wv_user_id order by log_dt) as u_leave_dt
+            , lead(url) over(partition by post_id, wv_user_id order by log_dt) as u_post_url
+            , lead(log_dt) over(partition by post_id, device_id order by log_dt) as d_leave_dt
+            , lead(url) over(partition by post_id, device_id order by log_dt) as d_post_url    
+
+            from (
+                select *
+                , case when u_seq = min_u_join and is_join = 1 then 1 end u_join
+                , case when u_seq = max_u_leave and is_leave = 1 then 1 end u_leave
+                , case when d_seq = min_d_join and is_join = 1 then 1 end d_join
+                , case when d_seq = max_d_leave and is_leave = 1 then 1 end d_leave
+
+                from (
+                    select *
+                    , case when is_join = 1 then min(u_seq) over(partition by post_id, wv_user_id, url) end as min_u_join
+                    , case when is_leave = 1 then max(u_seq) over(partition by post_id, wv_user_id, url) end as max_u_leave
+                    , case when is_join = 1 then min(d_seq) over(partition by post_id, device_id, url) end as min_d_join
+                    , case when is_leave = 1 then max(d_seq) over(partition by post_id, device_id, url) end as max_d_leave
+
+                    from (
+                        select
+                        a.date_id
+                        , a.hour
+                        , minute(a.log_dt) as minute
+                        , date_format(dateadd(hour, 9, a.log_dt), 'yyyy-MM-dd HH:mm') as datetime
+                        , a.log_dt
+                        , a.user_id_fill as wv_user_id
+                        , a.user_info_device_id as device_id
+                        , a.platform
+                        , a.os
+                        , a.gcc
+                        , a.url
+                        , a.is_join
+                        , a.is_leave
+                        , a.post_id
+                        , b.video_id
+                        , b.we_art_id
+                        , b.comm_id
+                        , b.is_fc_only
+                        , b.is_joint_live
+                        , b.start_dt
+                        , b.end_dt
+                        , b.tmp_end_dt
+                        , nvl(d.account_id, d.before_account_id) as we_member_id
+                        , case when a.log_dt > b.tmp_end_dt - interval 9 hours then 1 else 0 end as is_late
+                        , row_number() over(partition by a.post_id, a.user_id_fill, a.url order by a.log_dt) as u_seq
+                        , row_number() over(partition by a.post_id, a.user_info_device_id, a.url order by a.log_dt) as d_seq
+                        , case when date(from_unixtime(d.created_at/1000) + interval 9 hours) between date(b.start_dt) and date(b.tmp_end_dt) then 1 else 0 end as is_first_wv_join
+                        , case when e.post_id is not null then e.joint_seq end as guest_joint_seq
+                        , string(date(b.start_dt)) as part_date
+                        
+                        from 
+                        ( -- s_log
+                                    select * from we_mart.wv_server_log_base 
+                                    where 1=1
+                                    and date(date_id) between date('{key1}') and date('{key2}')
+                                    and media_type = 'LIVE'
+                                    and url in ('/video/v1.0/join','/video/v1.0/leave')
+                        ) a
+                        inner join 
+                        ( -- live list
+                                    select distinct 
+                                    *
+                                    , nvl(end_dt, timestamp('{key}') + interval 1 day) as tmp_end_dt
+                                    from we_mart.wv_live
+                                    where 1=1
+                                    and date(start_dt) between date('{key1}') and date('{key2}')
+                                    and is_from_vlive = 0
+                                    and status <> 'CANCELED'
+                        ) b on a.post_id = b.post_id
+                        left join weverse2.user_user d on a.user_id_fill = d.id
+                        left join 
+                        ( -- joint guest history
+                                    select distinct post_id, joint_at, leave_at, joint_seq
+                                    from wev_prod.we_mart.wv_live_joint_history
+                                    where joint_at is not null
+                        ) e on a.post_id = e.post_id and dateadd(hour, 9, a.log_dt) between e.joint_at and e.leave_at
+
+                        where 1=1
+                        and dateadd(hour, 9, a.log_dt) between b.start_dt and b.tmp_end_dt
+                    ) 
+                )
+            )
+        )
+        group by
+        part_date
+        , date_id
+        , hour
+        , minute
+        , datetime
+        , we_member_id
+        , wv_user_id
+        , device_id
+        , platform
+        , os
+        , gcc
+        , post_id
+        , video_id
+        , start_dt
+        , end_dt
+        , we_art_id
+        , comm_id
+        , is_fc_only
+        , is_late
+        , is_first_wv_join
+        , tmp_end_dt
+        , is_joint_live
+        , guest_joint_seq
+            
+    ) a
+    left join we_mart.wv_comm_user_update b on a.wv_user_id = b.wv_user_id and a.we_art_id = b.we_art_id
+    left join fc c on a.we_member_id = c.we_member_id and a.start_dt >= c.create_dt and a.end_dt < c.expire_dt and a.we_art_id = c.we_art_id and c.shop = 'GL'
+    left join fc d on a.we_member_id = d.we_member_id and a.start_dt >= d.create_dt and a.end_dt < d.expire_dt and a.we_art_id = d.we_art_id and d.shop = 'JP'
+    left join fc e on a.we_member_id = e.we_member_id and a.start_dt >= e.create_dt and a.end_dt < e.expire_dt and a.we_art_id = e.we_art_id and e.shop = 'US'
+
+    where 1=1
+    and ( u_num > 0 or d_num > 0 ) -- 라이브 종료 후 활동(join, leave)만 있는 경우 제외
+)
+'''"
+7,py,,code,"df = spark.sql(q)
+df = df[[
+'run_timestamp',
+'part_date',
+'date_id',
+'hour',
+'minute',
+'datetime',
+'we_member_id',
+'wv_user_id',
+'device_id',
+'platform',
+'os',
+'ctry_code',
+'post_id',
+'video_id',
+'start_dt',
+'end_dt',
+'tmp_end_dt',
+'we_art_id',
+'comm_id',
+'is_fc_only',
+'is_joint_live',
+'is_join',
+'is_leave',
+'u_join_first',
+'u_leave_last',
+'d_join_first',
+'d_leave_last',
+'is_late',
+'join_cnt',
+'leave_cnt',
+'u_sum_play_time',
+'d_sum_play_time',
+'is_first_wv_join',
+'is_first_comm_join',
+'is_comm_join',
+'is_comm_user',
+'is_fc',
+'guest_joint_seq'
+]]"
+8,py,,code,"# RUN MAIN QUERY
+b = Dataflow(run_mode=run_mode, notifier=noti)
+b.run(dataframe=df, table_info=table, option=option, buckets=['databricks'])"
+9,md ,,etc," ##### Appendix
+ * create table"
+10,py,,code,"create = '''
+create or replace table we_mart.wv_live_play (
+	run_timestamp	timestamp		
+,	part_date	string	comment	'LIVE시작일'
+,	date_id	string	comment	's_log.date_id(KST)'
+,	hour	string	comment	'hour(KST)'
+,	minute	int	comment	'minute(KST)'
+,	datetime	string		
+,	we_member_id	bigint		
+,	wv_user_id	string		
+,	device_id	string		
+,	platform	string	comment	'접속 플랫폼'
+,	os	string	comment	'접속 OS'
+,	ctry_code	string	comment	's_log.gcc'
+,	post_id	string		
+,	video_id	string		
+,	start_dt	timestamp	comment	'LIVE시작일시'
+,	end_dt	timestamp	comment	'LIVE종료일시'
+,	tmp_end_dt	timestamp	comment	'LIVE종료일시(임시)'
+,	we_art_id	int	comment	'아티스트id'
+,	comm_id	int	comment	'커뮤니티id'
+,	is_fc_only	int	comment	'커뮤니티only LIVE여부'
+, is_joint_live int comment '합동라이브 여부'
+,	is_join	int	comment	'재생 여부'
+,	is_leave	int	comment	'이탈 여부'
+,	u_join_first	int	comment	'유저,LIVE별 첫 재생'
+,	u_leave_last	int	comment	'유저,LIVE별 마지막 이탈'
+,	d_join_first	int	comment	'기기,LIVE별 첫 재생'
+,	d_leave_last	int	comment	'기기,LIVE별 마지막 이탈'
+,	is_late	int	comment	'LIVE종료 후 여부'
+,	join_cnt	bigint	comment	'재생수'
+,	leave_cnt	bigint	comment	'이탈수'
+,	u_sum_play_time	bigint	comment	'유저별 LIVE 시청시간 합(join/leave별)'
+,	d_sum_play_time	bigint	comment	'기기별 LIVE 시청시간 합(join/leave별)'
+,	is_first_wv_join	int	comment	'LIVE진행 중 위버스 최초가입 여부'
+,	is_first_comm_join	int	comment	'LIVE진행 중 커뮤니티 최초가입 여부'
+,	is_comm_join	int	comment	'LIVE진행 중 커뮤니티 가입 여부'
+,	is_comm_user	int	comment	'커뮤니티 가입자 여부'
+,	is_fc	int	comment	'FC유저 여부'
+, guest_joint_seq int comment '합동라이브 게스트 조인 순서'
+)
+partitioned by (part_date)
+comment 'LIVE재생 서버로그 마트'
+'''
+# spark.sql(create)
+"

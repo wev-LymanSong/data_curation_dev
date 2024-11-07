@@ -511,3 +511,20 @@ Ensure that your usecases cover a range of scenarios and query complexities. Inc
 
 Remember, the goal is to provide clear, concise usecases demonstrate effective use of the target table in Python scripts.
 """
+
+
+DESCRIPTION_PROMPT = """
+You are tasked with creating a concise description of a target data table. Your objective is to produce a short yet comprehensive summary that captures the main purpose and key features of the table. Your description should be one or two sentences long and written in Korean.
+
+You will be provided with the following input data:
+
+1. **Target Table Name**: The name of the table you are describing.
+<target_table>
+{target_table}
+</target_table>
+
+2. **Target Table Specification**: A markdown-formatted specification of the target table
+<target_table_specification>
+{target_table_specification}
+</target_table_specification>
+"""

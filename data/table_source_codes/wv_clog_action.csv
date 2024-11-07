@@ -1,0 +1,226 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,# wv_clog_
+2,md,,basic_info,"#### Basic Info
+* 위버스 클라이언트 로그 화면(page) 정의서들의 메타 정보
+  * Weverse2 Client Log 설계서의 [화면목록](https://docs.google.com/spreadsheets/d/1nBsHvVOplIjIy3cuTdZyVT-4vka3aSoV74Ow_e2UXJs/edit#gid=930250850)에 있는 페이지들의 로그 정의 내용을 가져와 테이블로 저장
+  * 히스토리 관리를 위해 주간 APPEND 형태로 구성
+* meta data 
+* WEEKLY APPEND
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2022-12-26 |송재영|마트 & 배치 생성|
+
+###### Source Tables
+* we_meta.wv_clog_page"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_meta',
+  'table_name' : 'wv_clog_action', 
+  'service' : ""weverse"", #default (None)
+  'partition' : ['part_week']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'append', #default (append)
+  'period' : 'weekly', #default (daily)
+  'noti' : True, #default (True)
+}"
+6,py,,code,"import datetime
+import time
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pyspark.sql.functions import col
+from pyspark.sql import functions as F
+
+try:
+  import gspread
+  from oauth2client.service_account import ServiceAccountCredentials
+except:
+  !pip install gspread
+  !pip install --upgrade oauth2client
+  import gspread
+  from oauth2client.service_account import ServiceAccountCredentials
+
+import pandas as pd
+from pyspark.sql import functions as f
+
+def col_index_to_letter(column_int, start_index = 0):
+    letter = ''
+    while column_int + start_index > 25:   
+        letter += chr(65 + int((column_int+start_index)/26) - 1)
+        column_int = column_int - (int((column_int+start_index)/26))*26
+    letter += chr(65 + start_index + (int(column_int)))
+    return letter
+
+def fill_up(l:list, n:int):
+    new_l = []
+    len_l = len(l)
+    for i in range(n):
+        new_l.append(l[i] if i < len_l else '')
+    return new_l
+  
+
+# authrization
+scope = [
+  'https://www.googleapis.com/auth/drive'
+]
+
+json_file_name = '/dbfs/FileStore/tables/elite_elevator_388506_d4350aba3f9b.json'
+credentials = ServiceAccountCredentials.from_json_keyfile_name(json_file_name, scope)
+gc = gspread.authorize(credentials)"
+7,md,,just_heading,#### Main Query
+8,py,로그정의서 별로 importrange 배치해 로그 한번에 뿌리기,code,"clog_url = ""https://docs.google.com/spreadsheets/d/1nBsHvVOplIjIy3cuTdZyVT-4vka3aSoV74Ow_e2UXJs/edit#gid=0""
+clog_doc = gc.open_by_url(clog_url)
+
+page_sdf = spark.table(""wev_prod.we_meta.wv_clog_page"").filter('is_formatted = 1')
+page_df = page_sdf.toPandas().sort_values(by = ['page_uid'])
+
+value_list = []
+cur_row = 2
+
+for i, r in page_df.iterrows():
+    page_uid = str(r['page_uid'])
+    page_id = r['page_id']
+    url = r['url_link']
+    n_logs = int(r['num_logs'])
+    value = '= importrange(""' + url + '"", ""이벤트로그정의서!A13:O' + str(12 + n_logs) + '"")' #importrange 함수를 셀의 값으로 넣어줌
+    
+    # 로그정의 문서에서 불러오기
+    value_list.append([page_uid, page_id, value])
+    
+    # 정의된 로그 수 만큼 빈칸으로 넣어주기
+    for j in range(0, n_logs - 1):
+        value_list.append([page_uid, page_id, ''])
+
+    # 최종 범위를 알기 위해 로그 개수 누적합 
+    cur_row += n_logs
+    
+ws = clog_doc.worksheet(""log_list_raw"")
+ws.update(
+    values = value_list
+    , range_name = ""A2:C"" + str(cur_row)
+    , value_input_option = 'USER_ENTERED'
+)
+
+time.sleep(20) ## UPDATE를 위해 기다"
+9,py,합쳐진 로그정의서 원본 한번에 불러오기,code,"log_data = ws.get_all_values()
+cols = [
+  'page_uid'
+, 'page_id'
+, 'log_status'
+, 'action_uid'
+, ""_""
+, 'action_id'
+, 'impression_match_type'
+, 'impression_content_type'
+, 'shop_referrer'
+, 'event_desc'
+, 'event_desc_add'
+, 'ios'
+, 'aos'
+, 'mw'
+, 'pc'
+, 'tvos'
+, 'event_value_list'
+]
+
+cur_logs = pd.DataFrame(data = log_data[1:], columns = cols)
+actions = spark.createDataFrame(cur_logs)
+
+# display(actions)"
+10,py,wv_clog_page와 조인,code,"df = (
+    page_sdf.join(actions, page_sdf.page_uid == actions.page_uid, how = 'left')
+    .withColumn(""event_value_list"", F.when(F.regexp_replace(F.regexp_replace(actions.event_value_list, "",+"", "",""), "",$"", """") == '', None).otherwise(F.split(F.regexp_replace(F.regexp_replace(actions.event_value_list, "",+"", "",""), "",$"", """"), "",\s*"").cast(""array<string>"")))
+    .withColumn(""ios"",  F.when((actions.ios  == """") | (upper(actions.ios ) == ""X""), f.lit(""X"")).when(upper(actions.ios)  == ""O"", f.lit(""O"")).when(actions.ios  == ""TBD"", f.lit(""TBD"")).otherwise(f.lit(""O"")))
+    .withColumn(""aos"",  F.when((actions.aos  == """") | (upper(actions.aos ) == ""X""), f.lit(""X"")).when(upper(actions.aos)  == ""O"", f.lit(""O"")).when(actions.aos  == ""TBD"", f.lit(""TBD"")).otherwise(f.lit(""O"")))
+    .withColumn(""mw"",   F.when((actions.mw   == """") | (upper(actions.mw  ) == ""X""), f.lit(""X"")).when(upper(actions.mw)   == ""O"", f.lit(""O"")).when(actions.mw   == ""TBD"", f.lit(""TBD"")).otherwise(f.lit(""O"")))
+    .withColumn(""pc"",   F.when((actions.pc   == """") | (upper(actions.pc  ) == ""X""), f.lit(""X"")).when(upper(actions.pc)   == ""O"", f.lit(""O"")).when(actions.pc   == ""TBD"", f.lit(""TBD"")).otherwise(f.lit(""O"")))
+    .withColumn(""tvos"", F.when((actions.tvos == """") | (upper(actions.tvos) == ""X""), f.lit(""X"")).when(upper(actions.tvos) == ""O"", f.lit(""O"")).when(actions.tvos == ""TBD"", f.lit(""TBD"")).otherwise(f.lit(""O"")))
+    .withColumn(""part_week"", F.lit(key))
+    .withColumn(""run_timestamp"", F.current_timestamp())
+    .select(
+        page_sdf.page_uid
+      , page_sdf.cre_by
+      , actions.log_status
+      , actions.action_uid.cast(""int"")
+      , page_sdf.page_id
+      , actions.action_id
+      , actions.impression_match_type
+      , actions.impression_content_type
+      , actions.shop_referrer
+      , actions.event_desc
+      , actions.event_desc_add
+      , ""ios""
+      , ""aos""
+      , ""mw""
+      , ""pc""
+      , ""tvos""
+      , ""event_value_list""
+      , ""part_week""
+      , ""run_timestamp""
+    )
+)
+
+# display(log_df)"
+11,py,,code,"ws = clog_doc.worksheet(""기타_관리_시트"")
+to_exclude_cols = [c.strip() for c in ws.get(""B3"")[0][0].split("","")] ## wv_clog_action에서 삭제할 연계로그
+for col in to_exclude_cols:
+    log_df = log_df.where(F.col(""impression_content_type"") != ""ad_id"")"
+12,py,,code,"dflow = Dataflow(run_mode = run_mode, notifier = noti)
+dflow.run(dataframe = log_df, table_info = table, option = option, buckets = ['databricks'])"
+13,md,,just_heading,#### APPENDIX
+14,md,,just_heading,###### Create Table
+15,py,,code,"# %sql
+# create or replace table wev_prod.we_meta.wv_clog_action
+# (
+#   page_uid                int               comment ""페이지별 유니크 integer id""
+# , cre_by                  string            comment ""정의한 팀원명""
+# , log_status              string            comment ""로그 상태값""
+# , action_uid              int               comment ""로그 별 유니크 integer id""
+# , page_id                 string            comment ""페이지 명""
+# , action_id               string            comment ""로그 명""
+# , impression_match_type   string            comment ""노출 영역 타입""
+# , impression_content_type string            comment ""노출 단위 객체 타입""
+# , shop_referrer           string            comment ""샵 랜딩에 대한 referrer 값 정보""
+# , event_desc              string            comment ""로그에 대한 설명""
+# , event_desc_add          string            comment ""로그에 대한 부가 설명""
+# , ios                     string            comment ""iOS 로그 상태""
+# , aos                     string            comment ""Android 로그 상태""
+# , mw                      string            comment ""Mobile Web 로그 상태""
+# , pc                      string            comment ""PC Web 로그 상태""
+# , tvos                    string            comment ""tvOS 로그 상태""
+# , event_value_list        array<string>     comment ""연계 로그 변수 리스트""
+# , part_week               string            comment ""적재 주""
+# , run_timestamp           timestamp         comment ""적재 당시 시간(UTC)""
+# )
+# partitioned by (part_week)
+# comment '위버스 clog 로그 메타 정보'"
+16,md,,just_heading,###### GNB pages view
+17,py,,code,"gnb_q = """"""
+create or replace view wev_prod.we_meta.wv_clog_gnb_page_action as
+select b.page_type, b.page_status, a.*
+from wev_prod.we_meta.wv_clog_action as a, (select max(part_week)  as latest from wev_prod.we_meta.wv_clog_action)
+left join wev_prod.we_meta.wv_clog_page as b
+on a.page_id = b.page_id
+where 1=1
+and a.part_week = latest
+and a.page_id rlike 'gnb'
+and page_type = 'SHARE'
+""""""
+
+# spark.sql(gnb_q)
+"

@@ -1,0 +1,188 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,# wv_clog_pag
+2,md,,basic_info,"#### Basic Info
+* 위버스 클라이언트 로그 화면(page) 정의서들의 메타 정보
+  * Weverse2 Client Log 설계서의 [화면목록](https://docs.google.com/spreadsheets/d/1nBsHvVOplIjIy3cuTdZyVT-4vka3aSoV74Ow_e2UXJs/edit#gid=930250850)를 가져와 정리한 데이터
+  * 각 화면의 행동(action)별 정의 내용은 we_meta.wv_clog_action에 세부 정의돼있음, page_id 로 맵핑 가능
+* meta data 
+* WEEKLY OVERWRITE
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2022-12-26 |송재영|마트 & 배치 생성|
+
+###### Source Tables
+"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"key = None # dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_meta',
+  'table_name' : 'wv_clog_page', 
+  'service' : ""weverse"", #default (None)
+  # 'partition' : ['part_date']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'overwrite', #default (append)
+  'period' : 'weekly', #default (daily)
+  'noti' : True, #default (True)
+}"
+6,py,,code,"import datetime
+import time
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pyspark.sql.functions import col
+from pyspark.sql import functions as F
+
+try:
+  import gspread
+  from oauth2client.service_account import ServiceAccountCredentials
+except:
+  !pip install gspread
+  !pip install --upgrade oauth2client
+  import gspread
+  from oauth2client.service_account import ServiceAccountCredentials
+
+import pandas as pd
+from pyspark.sql import functions as f
+
+def col_index_to_letter(column_int, start_index = 0):
+    letter = ''
+    while column_int + start_index > 25:   
+        letter += chr(65 + int((column_int+start_index)/26) - 1)
+        column_int = column_int - (int((column_int+start_index)/26))*26
+    letter += chr(65 + start_index + (int(column_int)))
+    return letter
+
+def fill_up(l:list, n:int):
+    new_l = []
+    len_l = len(l)
+    for i in range(n):
+        new_l.append(l[i] if i < len_l else '')
+    return new_l
+  
+
+# authrization
+scope = [
+  'https://www.googleapis.com/auth/drive'
+]
+json_file_name = '/dbfs/FileStore/tables/elite_elevator_388506_d4350aba3f9b.json'
+credentials = ServiceAccountCredentials.from_json_keyfile_name(json_file_name, scope)
+gc = gspread.authorize(credentials)
+
+clog_url = ""https://docs.google.com/spreadsheets/d/1nBsHvVOplIjIy3cuTdZyVT-4vka3aSoV74Ow_e2UXJs/edit#gid=930250850""
+clog_doc = gc.open_by_url(clog_url)"
+7,md,,just_heading,#### Main Query
+8,py,,code,"ws_pages = clog_doc.worksheet(""화면목록"")
+
+ll = ws_pages.get_all_values()[5:]
+cols, col_num = [c.strip().replace("" "", ""_"") for c in ll[0]], len(ll[0])
+ll = [fill_up(l, col_num) for l in ll]
+
+
+page_list = spark.createDataFrame(data = pd.DataFrame(ll[1:], columns = cols))
+
+page_list = (page_list
+    .withColumn(""page_uid"", page_list.no.cast(""int""))
+    .withColumn(""page_type"",\
+        f.when(page_list.type == ""일반"", ""NORMAL"")
+         .when(page_list.type == ""공통"", ""SHARE"")
+         .otherwise(""ETC"")
+        )
+    .withColumn(""page_desc"", page_list.페이지명)
+    .withColumn(""cre_by"", f.when(page_list.작성자 == '', None).otherwise(page_list.작성자))
+    .withColumn(""url_link"", f.when(page_list.이벤트_로그정의서_link == '', None).otherwise(page_list.이벤트_로그정의서_link))
+    .withColumn(""page_status"",\
+        f.when((upper(page_list.페이지_정의_상태) == '정상') & (page_list.포맷설정_완료 == ""O""), ""NORMAL"")
+         .when((upper(page_list.페이지_정의_상태) == '정상') & (page_list.포맷설정_완료 != ""O""), ""NORMAL_NOT_FORMATTED"")
+         .when(upper(page_list.페이지_정의_상태) == '삭제', ""DELETED"").otherwise(""ON_DEFINITION"")
+        )
+    .withColumn(""is_formatted"", f.when(upper(page_list.포맷설정_완료) == 'O', 1).otherwise(0))
+)
+column_check   = True if ""LOAD"" not in ws_pages.get('J7')[0][0].upper() and ""로드"" not in ws_pages.get('J7')[0][0].upper() else False # 가끔 import range가 Loading... 이나 로드 중... 으로 불러와질 때가 있음 그럴 땐 AA열(num_logs)의 숫자를 사용
+cre_date_check = True if ""LOAD"" not in ws_pages.get('K7')[0][0].upper() and ""로드"" not in ws_pages.get('K7')[0][0].upper() else False # 위와 같은 조건
+upd_date_check = True if ""LOAD"" not in ws_pages.get('L7')[0][0].upper() and ""로드"" not in ws_pages.get('L7')[0][0].upper() else False # 위와 같은 조건
+
+page_list = (page_list
+    .withColumn(""num_logs"", f.when(upper(page_list.정의된_로그_수 if column_check else page_list.num_logs) == '', None).otherwise(page_list.정의된_로그_수 if column_check else page_list.num_logs).cast(""int""))
+    .withColumn(""cre_date"", f.when(upper(page_list.최초_작성일 if cre_date_check else page_list.cre_date) == '', None).otherwise(page_list.최초_작성일 if cre_date_check else page_list.cre_date).cast(""date""))
+    .withColumn(""upd_date"", f.when(upper(page_list.최신_작성일 if upd_date_check else page_list.upd_date) == '', None).otherwise(page_list.최신_작성일 if upd_date_check else page_list.upd_date).cast(""date""))
+    .select(
+          ""page_uid""
+        , ""page_id""
+        , ""page_type""
+        , ""page_desc""
+        , ""cre_by""
+        , ""cre_date""
+        , ""upd_date""
+        , ""url_link""
+        , ""page_status""
+        , ""is_formatted""
+        , ""num_logs""
+    )
+)
+
+display(page_list)"
+9,py,,code,"pages_last_week = spark.read.table(""wev_prod.we_meta.wv_clog_page"")
+page_df = (
+    page_list.join(pages_last_week, on = 'page_uid', how = 'left')
+    .select(
+         f.coalesce(page_list.page_uid, pages_last_week.page_uid).alias(""page_uid"")
+        , f.coalesce(page_list.page_id, pages_last_week.page_id).alias(""page_id"")
+        , f.coalesce(page_list.page_type, pages_last_week.page_type).alias(""page_type"")
+        , f.coalesce(page_list.page_desc, pages_last_week.page_desc).alias(""page_desc"")
+        , f.coalesce(page_list.cre_by, pages_last_week.cre_by).alias(""cre_by"")
+        , f.coalesce(page_list.cre_date, pages_last_week.cre_date).alias(""cre_date"")
+        , f.coalesce(page_list.upd_date, pages_last_week.upd_date).alias(""upd_date"")
+        , f.coalesce(page_list.url_link, pages_last_week.url_link).alias(""url_link"")
+        , f.coalesce(page_list.page_status, pages_last_week.page_status).alias(""page_status"")
+        , f.coalesce(page_list.is_formatted, pages_last_week.is_formatted).alias(""is_formatted"")
+        , f.coalesce(page_list.num_logs, pages_last_week.num_logs).alias(""num_logs"")
+    )
+    .withColumn(""run_timestamp"", f.current_timestamp())
+)
+display(page_df)"
+10,py,,code,"dflow = Dataflow(run_mode = run_mode, notifier = noti)
+dflow.run(dataframe = page_df, table_info = table, option = option, buckets = ['databricks'])"
+11,md,,just_heading,#### APPENDIX
+12,md,,just_heading,###### Create Table
+13,py,,code,"# %sql
+# create or replace table wev_prod.we_meta.wv_clog_page
+# (
+#   page_uid      int  comment ""페이지별 유니크 integer id""
+# , page_id       string  comment ""페이지 명""
+# , page_type     string  comment ""페이지 타입{일반(NORMAL), 공통(SHARE)}""
+# , page_desc     string  comment ""정의한 페이지에 대한 간단한 설명""
+# , cre_by        string  comment ""정의한 팀원명""
+# , cre_date      date  comment ""최초 정의 날짜""
+# , upd_date      date  comment ""최신 수정 날짜""
+# , url_link      string  comment ""url""
+# , page_status   string  comment ""페이지 정의 상태{정상(NORAML, NORMAL_NOT_FORMATTED), 삭제(DELETE), 정의/수정 중(ON_DEFINITION)""
+# , is_formatted  int  comment ""포맷화 여부""
+# , num_logs      int  comment ""정의된 로그(action, view, impression 등) 수""
+# , run_timestamp timestamp  comment ""배치 실행 시간""
+# )
+# using DELTA
+# comment '위버스 clog 페이지 메타 정보'"
+14,md,,just_heading,###### [clog 스키마 import](https://docs.google.com/spreadsheets/d/1nBsHvVOplIjIy3cuTdZyVT-4vka3aSoV74Ow_e2UXJs/edit#gid=0)
+15,py,,code,"ws_scheme = clog_doc.worksheet(""log_scheme"")
+cols = ws_scheme.row_values(2)
+cols = [i.replace("" "", ""_"") for i in ws_scheme.row_values(2) if i != '']
+
+values = ws_scheme.get_all_values()
+scheme_list = spark.createDataFrame(data = pd.DataFrame(values[2:], columns = cols))
+display(scheme_list)
+scheme_list.write.format(""delta"").mode(""overwrite"").saveAsTable(""wev_prod.we_meta.wv_clog_scheme"")
+"

@@ -1,6 +1,8 @@
 import requests
 from notion_client import Client
+from tools.utils.md2notion_uploader import *
 import pandas as pd
+import os
 
 class NotionConnector(object):
     """
@@ -20,14 +22,18 @@ class NotionConnector(object):
         restore_page(page_id): Restore an archived page.
         create_page(database_id, page_title): Create a new page in a database.
     """
-    def __init__(self, notion_api_key: str):
+    
+
+    def __init__(self, notion_api_key):
         self.notion_api_key = notion_api_key
+        self.md_uploader = Md2NotionUploader(notion_api_key=notion_api_key)
         self.notion = Client(auth=self.notion_api_key)
         self.headers = {
             "Authorization": f"{self.notion_api_key}",
             "Content-Type": "application/json",
             "Notion-Version": "2022-06-28"
         }
+        
         
     def get_database_children(self, database_id = None):
         """
@@ -57,7 +63,7 @@ class NotionConnector(object):
                 try:
                     page_title = page.get('properties').get('Name').get('title')[0].get('plain_text')
                 except:
-                    page_title = page.get('properties').get('이름').get('title')[0].get('plain_text')
+                    page_title = page.get('properties').get('테이블 명').get('title')[0].get('plain_text')
                 page_created_at = page.get('created_time')
                 cur_row = {
                     'page_title' : page_title, 
@@ -105,7 +111,7 @@ class NotionConnector(object):
             print(f"Page restore failed: {response.status_code}, {response.json()}")
             return None, False
         
-    def create_page(self, database_id = None, page_title = None):
+    def create_page(self, database_id = None, page_title = None, description = "테스트 Description"):
         """
         data는 JSON으로 들어가는 페이지 속성(properties) 값이며 database의 하위 페이지일 경우 database의 properties에 있는 필드들이 원소로 들어가야 함.
         ex) 만약 상위 database의 속성 중 페이지의 제목 property 필드명이 Name이 아니고 '이름'이라면 JSON 내부에도 '이름'이라고 적어줘야 함.
@@ -114,11 +120,20 @@ class NotionConnector(object):
         data = {
             "parent": { "database_id": database_id },
             "properties": {
-                "Name": {
+                "테이블 명": {
                     "title": [
                         {
                             "text": {
                                 "content": page_title
+                            }
+                        }
+                    ]
+                },
+                "설명": {
+                    "rich_text": [
+                        {
+                            "text": {
+                                "content": description
                             }
                         }
                     ]
@@ -151,3 +166,26 @@ class NotionConnector(object):
         
         #TBD
         return None
+    
+
+    def upload_mdfile2page(self, target_db, target_table, md_file_path = None):
+        
+        page_responses, page_df = self.get_database_children(database_id = target_db)
+        
+        tmp_page = page_df[page_df['page_title'] == target_table]
+        if len(tmp_page) == 1:
+            target_page_uid = tmp_page['page_uid'].iloc[0].replace("-", '')
+        else:
+            target_page_uid = None
+        
+        ## Delete and Create
+        if target_page_uid is not None:
+            self.delete_page(page_id=target_page_uid)
+        if (target_page_uid :=self.create_page(database_id = target_db, page_title = target_table)):
+            print(target_page_uid)
+
+        params = self.md_uploader.run(
+            markdown_file_path=md_file_path,
+            PAGE_ID=target_page_uid.replace("-", ""),
+            toc_construct = True
+        )

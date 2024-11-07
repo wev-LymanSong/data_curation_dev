@@ -4,7 +4,7 @@ we_mart.wa_album
 
 # BASIC INFO
 
-|**About**| |
+|**About**| 담당자 수기 입력 필요 |
 | :--- | :--- |
 |**Database**|**we_mart**|
 |**Table Type**|MART PRIMARY|
@@ -51,60 +51,51 @@ we_mart.wa_album
   
 ### 테이블 개요
 
-* **테이블 목적**: 위버스 앨범 메타 데이터 정보와 위버스샵 앨범 메타 데이터 정보를 통합하여 위버스 앨범 ID 기준으로 매칭된 정보를 제공
-* **데이터 레벨**: AGGREGATED DATA(STATISTICS)
+* **테이블 목적**: 위버스 앨범 메타 데이터를 통합하여 제공
+* **데이터 레벨**: AGGREGATED DATA(STATISTICS) 
 * **파티션 키**: 없음
-* **주요 키**: `wa_album_id` 
+* **주요 키**: `wa_album_id`
 
 ### 테이블 특징
 
-* 위버스 앨범 메타 데이터와 위버스샵 앨범 메타 데이터를 `we_art_id` 기준으로 조인하여 통합
-* 앨범 이름 유사도를 계산하여 가장 유사한 앨범 정보를 매칭
-* 앨범 이름 유사도가 0.2 이상인 앨범 정보만 포함
-* `wa_album_id` 기준으로 정렬
+* 위버스 앨범(WA) 테이블과 위버스샵 앨범(WS) 테이블의 데이터를 통합하여 위버스 플랫폼 내 앨범 정보를 일관성 있게 제공
+* 앨범 이름 유사도를 계산하여 가장 관련성 높은 WS 앨범 정보를 매칭
+* 위버스 앨범(WA) 테이블, 위버스샵 앨범(WS) 테이블, 쿠폰 정보를 조인하여 앨범과 관련된 다양한 정보 제공
 
 ### 데이터 추출 및 생성 과정
 
 1. **주요 데이터 소스**:
-    * `wev_prod.album.album`: 위버스 앨범 메타 데이터
-    * `wev_prod.album.artist`: 위버스 아티스트 메타 데이터
-    * `wev_prod.wecode.tb_entity`: Wecode 정보
-    * `we_meta.ws_album`: 위버스샵 앨범 메타 데이터
-    * `album.user_album_reg`: 앨범 등록 정보
-    * `coupon.tb_cp_used`: 쿠폰 사용 정보
-    * `coupon.tb_cp_plan`: 쿠폰 플랜 정보
+    * `wev_prod.album.album`: 위버스 앨범 테이블
+    * `wev_prod.album.artist`: 위버스 아티스트 테이블
+    * `we_meta.ws_album`: 위버스샵 앨범 테이블
+    * `coupon.tb_cp_used`: 쿠폰 사용 정보 테이블
+    * `coupon.tb_cp_plan`: 쿠폰 플랜 정보 테이블
 2. **데이터 전처리**:
-    * `wev_prod.album.album` 테이블에서 `album_id`, `title`, `artist_id`, `release_date` 컬럼을 추출
-    * `wev_prod.album.artist` 테이블에서 `artist_id`, `artist_name`, `we_code` 컬럼을 추출
-    * `wev_prod.wecode.tb_entity` 테이블에서 `wecode`, `we_art_id`, `we_art_name` 컬럼을 추출
-    * `we_meta.ws_album` 테이블에서 `we_art_id`, `we_art_name`, `album_id`, `album_name`, `album_release_date` 컬럼을 추출
-    * `album.user_album_reg` 테이블에서 `album_id`, `coupon_num` 컬럼을 추출
-    * `coupon.tb_cp_used` 테이블에서 `cp_cd`, `cp_plan_id` 컬럼을 추출
-    * `coupon.tb_cp_plan` 테이블에서 `id`, `is_test` 컬럼을 추출
-    * `we_art_id` 기준으로 위버스 앨범 메타 데이터와 위버스샵 앨범 메타 데이터를 조인
-    * 앨범 이름 유사도를 계산하여 가장 유사한 앨범 정보를 매칭
+    * 위버스 앨범 테이블과 아티스트 테이블을 조인하여 앨범 정보에 아티스트 정보 추가
+    * 위버스샵 앨범 테이블에서 앨범 ID, 이름, 발매일, 판매 정보 추출
+    * 쿠폰 정보를 앨범 ID 기준으로 그룹핑하여 앨범별 쿠폰 플랜 ID 리스트 생성
 3. **데이터 통합**:
-    * 위버스 앨범 메타 데이터, 위버스샵 앨범 메타 데이터, 쿠폰 정보를 `wa_album_id` 기준으로 조인
+    * 위버스 앨범 정보와 위버스샵 앨범 정보를 `we_art_id` 기준으로 조인
+    * 앨범 이름 유사도를 계산하여 가장 관련성 높은 위버스샵 앨범 정보를 매칭
+    * 쿠폰 플랜 정보를 앨범 ID 기준으로 조인하여 앨범별 쿠폰 플랜 정보 추가
 4. **최종 테이블 생성**:
-    * `wa_album_id`, `wa_album_name`, `we_art_id`, `we_art_name`, `entity_we_art_id`, `wa_artist_id`, `wa_art_name`, `wa_release_date`, `album_id`, `album_name`, `album_release_date`, `cp_plan_ids`, `sale_ids`, `weverse_album_sale_ids`, `physical_album_sale_ids` 컬럼을 포함하는 최종 테이블 생성
+    * 위버스 앨범 테이블, 위버스샵 앨범 테이블, 쿠폰 정보를 통합하여 `we_mart.wa_album` 테이블 생성
 
 ### 테이블 활용 가이드
 
 * **주요 활용**:
     * 위버스 앨범 정보와 위버스샵 앨범 정보를 통합하여 분석
-    * 앨범 판매 정보, 쿠폰 사용 정보 등을 분석
+    * 위버스 앨범과 관련된 쿠폰 정보 확인
+    * 앨범 판매 정보 및 쿠폰 정보 분석을 통한 마케팅 전략 수립
 * **조인 시 유의사항**:
-    * `we_art_id` 기준으로 다른 테이블과 조인 시, 위버스 앨범과 위버스샵 앨범이 동일한 아티스트인지 확인
-    * `wa_album_id` 와 `album_id` 는 다른 앨범을 나타낼 수 있음
+    * `we_art_id` 컬럼은 위버스 플랫폼 내 통합 아티스트 ID이므로, 다른 테이블과 조인할 때 유의
+    * `wa_album_id`는 위버스 앨범 테이블의 고유 ID이고, `album_id`는 위버스샵 앨범 테이블의 고유 ID이므로, 두 ID를 이용하여 두 테이블의 데이터를 연관하여 분석 가능
 
 ### 추가 정보
 
-* 앨범 이름 유사도는 `cosine_similarity` 함수를 사용하여 계산
-* 앨범 이름 유사도가 0.2 이상인 앨범 정보만 포함
-* `cp_plan_ids` 컬럼은 쿠폰 플랜 ID 목록
-* `sale_ids` 컬럼은 앨범과 관련된 모든 판매 ID 목록
-* `weverse_album_sale_ids` 컬럼은 위버스 앨범 판매 ID 목록
-* `physical_album_sale_ids` 컬럼은 실물 앨범 판매 ID 목록  
+* `wa_album_id`와 `album_id` 컬럼은 각각 위버스 앨범과 위버스샵 앨범의 고유 ID를 나타내며, 두 컬럼을 이용하여 두 테이블의 데이터를 연관하여 분석 가능
+* `sale_ids` 컬럼은 앨범과 관련된 모든 판매 정보를 담고 있으며, `weverse_album_sale_ids`와 `physical_album_sale_ids` 컬럼은 각각 위버스 앨범과 실물 앨범 판매 정보를 담고 있음
+* `cp_plan_ids` 컬럼은 앨범과 관련된 쿠폰 플랜 ID를 담고 있으며, 해당 ID를 이용하여 `coupon.tb_cp_plan` 테이블에서 쿠폰 플랜 정보를 조회할 수 있음  
 ---
 # COLUMN INFO
 
@@ -130,85 +121,86 @@ we_mart.wa_album
 ---
 # HOW TO USE
   
+`
 ### Downstream Table/View
-- 위버스 앨범 ID를 기준으로 위버스 앨범 정보와 위버스샵 앨범 정보를 합쳐 새로운 테이블을 생성
+- `we_mart.wa_album` 테이블을 사용하여 위버스 앨범 판매 현황을 일별로 집계하는 `stats_wa_d_album_sale` 테이블을 생성
     - ```sql
       select 
-        wa.wa_album_id,
-        wa.wa_album_name,
-        wa.we_art_id,
-        wa.we_art_name,
-        ws.album_id,
-        ws.album_name,
-        ws.album_release_date
-      from we_mart.wa_album wa
-      left join we_meta.ws_album ws
-      on wa.wa_album_id = ws.album_id
+        date(a.part_date) as key_date
+      , a.wa_album_id
+      , a.wa_album_name
+      , a.we_art_id
+      , a.we_art_name
+      , count(distinct b.we_member_id) as uu_pur_cnt
+      , sum(b.ord_item_qty) as pur_cnt
+      , sum(b.ord_item_amt_krw) as amt_krw
+      from we_mart.wa_album as a
+      left join we_mart.ws_album_sale as b
+      on a.wa_album_id = b.wa_album_id
+      group by 1, 2, 3, 4, 5
+      order by 1, 2, 3, 4, 5
       ```
-
-- 위버스 앨범 정보와 쿠폰 정보를 조인하여 새로운 테이블을 생성
+- `we_mart.wa_album` 테이블을 사용하여 위버스 앨범 별 구매 유저수를 집계하는 `wi_view.wa_album_user_cnt` 뷰를 생성
     - ```sql
       select 
-        wa.wa_album_id,
-        wa.wa_album_name,
-        wa.we_art_id,
-        wa.we_art_name,
-        cp.cp_plan_ids
-      from we_mart.wa_album wa
-      left join we_mart.cp cp
-      on wa.wa_album_id = cp.album_id
-      ```
-
-- 위버스 앨범 정보와 아티스트 정보를 조인하여 새로운 테이블을 생성
-    - ```sql
-      select 
-        wa.wa_album_id,
-        wa.wa_album_name,
-        wa.we_art_id,
-        wa.we_art_name,
-        art.artist_id,
-        art.artist_name
-      from we_mart.wa_album wa
-      left join wev_prod.album.artist art
-      on wa.wa_artist_id = art.artist_id
+        a.wa_album_id
+      , a.wa_album_name
+      , count(distinct b.we_member_id) as uu_pur_cnt
+      from we_mart.wa_album as a
+      left join we_mart.ws_album_sale as b
+      on a.wa_album_id = b.wa_album_id
+      group by 1, 2
+      order by 1, 2
       ```
 
 ### Data Extraction
-- 특정 아티스트의 위버스 앨범 정보를 추출
+- `we_mart.wa_album` 테이블에서 아티스트 ID가 "ARTIST"인 앨범들의 정보를 추출
     - ```sql
       select 
-        wa_album_id,
-        wa_album_name,
-        we_art_id,
-        we_art_name,
-        wa_release_date
+        wa_album_id
+      , wa_album_name
+      , we_art_id
+      , we_art_name
       from we_mart.wa_album
-      where we_art_id = 1234
+      where we_art_id = "ARTIST"
+      order by wa_album_id
       ```
-
-- 특정 기간 동안 출시된 위버스 앨범 목록을 추출
+- `we_mart.wa_album` 테이블에서 "2024-01-01" 이후에 발매된 앨범들의 정보를 추출
     - ```sql
       select 
-        wa_album_id,
-        wa_album_name,
-        we_art_id,
-        we_art_name,
-        wa_release_date
+        wa_album_id
+      , wa_album_name
+      , we_art_id
+      , we_art_name
+      , wa_release_date
       from we_mart.wa_album
-      where wa_release_date between '2023-01-01' and '2023-12-31'
+      where wa_release_date >= "2024-01-01"
+      order by wa_album_id
       ```
-
-- 위버스 앨범 ID와 위버스샵 앨범 ID가 일치하는 앨범 정보를 추출
+- `we_mart.wa_album` 테이블에서 위버스 앨범 ID가 "1234"인 앨범의 쿠폰 정보를 추출
     - ```sql
       select 
-        wa_album_id,
-        wa_album_name,
-        we_art_id,
-        we_art_name,
-        album_id,
-        album_name
+        wa_album_id
+      , wa_album_name
+      , cp_plan_ids
       from we_mart.wa_album
-      where wa_album_id = album_id
+      where wa_album_id = "1234"
+      ```
+- `we_mart.wa_album` 테이블에서 위버스 앨범 ID가 "1234"인 앨범의 위버스 앨범과 관련된 모든 sale_id 리스트를 추출
+    - ```sql
+      select 
+        wa_album_id
+      , weverse_album_sale_ids
+      from we_mart.wa_album
+      where wa_album_id = "1234"
+      ```
+- `we_mart.wa_album` 테이블에서 위버스 앨범 ID가 "1234"인 앨범의 실물 앨범과 관련된 sale_id 리스트를 추출
+    - ```sql
+      select 
+        wa_album_id
+      , physical_album_sale_ids
+      from we_mart.wa_album
+      where wa_album_id = "1234"
       ```  
 ---
 # PIPELINE INFO
@@ -247,65 +239,63 @@ we_mart.wa_album
 ## 🐤 Downstream Tables Info
   
 ### Downstream Tables
-- **`we_mart.wa_album_sale`**: 위버스 앨범 판매 정보를 담고 있는 테이블.
-    - `we_mart.wa_album` 테이블을 사용하여 위버스 앨범 ID와 관련 정보를 가져와 판매 정보와 함께 저장. 
-    - 사용자는 `wa_album_id` 컬럼을 통해 특정 위버스 앨범에 대한 판매 정보를 추출 가능.
-- **`we_mart.stats_ws_d_album_sale`**: 위버스샵 앨범 판매 통계 정보를 담고 있는 테이블.
-    - `we_mart.wa_album` 테이블을 사용하여 위버스 앨범 ID와 관련 정보를 가져와 앨범 판매 통계 정보와 함께 저장.
-    - 사용자는 `wa_album_id` 컬럼을 통해 특정 위버스 앨범에 대한 판매 통계 정보를 추출 가능.
+- **`we_mart.ws_album_sale`**: 위버스샵 앨범 상품 판매 정보를 담고 있는 마트 테이블
+    - `we_mart.wa_album` 테이블을 조인하여 위버스 앨범 ID (`wa_album_id`)와 관련 정보를 추가
+    - 위버스 앨범 판매 데이터를 추출하려면 이 테이블을 사용하면 됨. 예를 들어, 특정 날짜에 판매된 위버스 앨범 ID와 판매량을 알아보려면 다음 쿼리를 사용하면 됨.
+
+    ```sql
+    select wa_album_id, sum(ord_item_qty * album_qty) as total_album_qty
+    from we_mart.ws_album_sale
+    where part_date = '2023-12-25'
+    group by wa_album_id
+    ```
+
+- **`we_mart.wa_user_album_reg`**: 위버스 앨범 등록 정보를 담고 있는 마트 테이블
+    - `we_mart.wa_album` 테이블을 조인하여 위버스 앨범 ID(`wa_album_id`)와 관련 정보를 추가
+    - 특정 날짜에 등록된 위버스 앨범 정보를 알아보려면 이 테이블을 사용하면 됨. 예를 들어, 2023년 12월 25일에 등록된 모든 위버스 앨범 정보를 추출하려면 다음 쿼리를 사용하면 됨.
+
+    ```sql
+    select wa_album_id, wa_album_name, we_art_id, we_art_name
+    from we_mart.wa_user_album_reg
+    where part_date = '2023-12-25'
+    ```
 
 ### Downstream View Tables
-- **`we_mart.view_wa_album_sales_by_country`**: 국가별 위버스 앨범 판매 정보를 제공하는 뷰 테이블.
-    - `we_mart.wa_album` 테이블을 사용하여 위버스 앨범 ID와 관련 정보를 가져와 `we_mart.stats_ws_d_album_sale` 테이블의 국가별 앨범 판매 통계 정보와 함께 표시.
+- **`we_mart.view_ws_album_latest`**: `we_meta.ws_album` 테이블의 가장 최근 파티션 날짜 데이터만 보여주는 뷰 테이블
+    - `we_mart.wa_album` 테이블을 사용하지 않음.
+    - 가장 최근에 업데이트된 위버스샵 앨범 정보를 간편하게 확인할 때 사용
+    - 다음 쿼리는 현재 날짜 기준 가장 최근에 업데이트된 앨범 정보를 가져옴.
+
     ```sql
-    select
-        s.key_date,
-        s.ctry_code,
-        s.ctry_name,
-        s.we_art_id,
-        s.we_art_name,
-        s.album_id,
-        s.album_name,
-        s.shop,
-        s.album_pur_cnt,
-        s.album_cx_cnt,
-        s.album_net_cnt,
-        s.uu_pur_cnt,
-        s.uu_cx_cnt,
-        a.wa_album_id,
-        a.wa_release_date,
-        a.cp_plan_ids,
-        a.sale_ids,
-        a.weverse_album_sale_ids,
-        a.physical_album_sale_ids
-    from we_mart.stats_ws_d_album_sale s
-    left join we_mart.wa_album a
-    on s.album_id = a.album_id;
+    select album_id, album_name, we_art_id, we_art_name
+    from we_mart.view_ws_album_latest
     ```
-- **`we_mart.view_wa_album_sales_by_artist`**: 아티스트별 위버스 앨범 판매 정보를 제공하는 뷰 테이블.
-    - `we_mart.wa_album` 테이블을 사용하여 위버스 앨범 ID와 관련 정보를 가져와 `we_mart.stats_ws_d_album_sale` 테이블의 아티스트별 앨범 판매 통계 정보와 함께 표시.
+
+- **`we_mart.view_wa_album_latest`**: `we_mart.wa_album` 테이블의 가장 최근 파티션 날짜 데이터만 보여주는 뷰 테이블
+    - `we_mart.wa_album` 테이블의 `part_date` 컬럼을 파티션 키로 사용
+    - 가장 최근에 업데이트된 위버스 앨범 정보를 간편하게 확인할 때 사용
+    - 다음 쿼리는 현재 날짜 기준 가장 최근에 업데이트된 앨범 정보를 가져옴.
+
     ```sql
-    select
-        s.key_date,
-        s.we_art_id,
-        s.we_art_name,
-        s.album_id,
-        s.album_name,
-        s.shop,
-        s.album_pur_cnt,
-        s.album_cx_cnt,
-        s.album_net_cnt,
-        s.uu_pur_cnt,
-        s.uu_cx_cnt,
-        a.wa_album_id,
-        a.wa_release_date,
-        a.cp_plan_ids,
-        a.sale_ids,
-        a.weverse_album_sale_ids,
-        a.physical_album_sale_ids
-    from we_mart.stats_ws_d_album_sale s
-    left join we_mart.wa_album a
-    on s.album_id = a.album_id
-    group by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18;
+    select wa_album_id, wa_album_name, we_art_id, we_art_name
+    from we_mart.view_wa_album_latest
+    ```
+
+- **`we_mart.view_wa_album_sales_detail`**: `we_mart.wa_album` 테이블을 사용하여 위버스 앨범 ID, 앨범 이름, 아티스트 정보와 함께 해당 앨범의 상세 판매 정보를 제공하는 뷰 테이블
+    - `we_mart.wa_album` 테이블을 조인하여 위버스 앨범 ID(`wa_album_id`)와 관련 정보를 추가
+    - `we_mart.ws_album_sale` 테이블을 조인하여 앨범 판매 관련 상세 정보를 추가
+    - 특정 위버스 앨범의 판매 정보를 자세히 알아보려면 이 뷰 테이블을 사용하면 됨. 예를 들어, 위버스 앨범 ID가 100인 앨범의 판매 정보를 추출하려면 다음 쿼리를 사용하면 됨.
+
+    ```sql
+    select 
+        WA.wa_album_id, WA.wa_album_name, WA.we_art_id, WA.we_art_name,
+        WS.shop, WS.ctry_code, WS.album_qty_type, WS.album_option_type,
+        sum(WS.ord_item_qty * WS.album_qty) as total_album_qty,
+        sum(WS.ord_item_amt_krw) as total_album_amt_krw
+    from we_mart.wa_album as WA
+    join we_mart.ws_album_sale as WS
+        on WA.wa_album_id = WS.wa_album_id
+    where WA.wa_album_id = 100
+    group by 1, 2, 3, 4, 5, 6, 7, 8
     ```  
 ---

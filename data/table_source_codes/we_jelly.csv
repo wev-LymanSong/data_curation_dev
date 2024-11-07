@@ -1,0 +1,126 @@
+,cell_type,cell_title,role,codes
+1,md,,basic_info,"#### Basic Info
+* 젤리 상품 메타 정보
+* VIEW TABLE
+* WIKI : [LINK]() 
+* 기타 : 위버스 플랫폼 내에서 사용되는 젤리 상품의 메타 정보
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2023-07-20 |송재영|뷰 생성|
+|2023-09-13 |송재영|Payment system, 프로모션 정보 추가 등 고도화|
+|2024-08-08 |송재영|젤리 패키지(유무상 젤리 분리) 업데이트로 인한 메타 테이블 구조 변경|
+|2024-08-23 |송재영|FREE 젤리들의 Display 가격(jelly_selling_unit_price) null화, jelly_product_type 말단에 FREE 명시화로 변경([요청](https://bighitcorp.atlassian.net/browse/DATA-6324))|
+
+###### Source Tables
+* jelly.point
+* jelly.point_group
+* jelly.promotion_point
+* jelly."
+2,md,,just_heading,#### View Query
+3,py,,setting,"spark.sql(""use catalog 'wev_prod'"")
+spark.sql(""set time zone 'Asia/Seoul'"")"
+4,sql,,code," create or replace view wev_prod.we_mart.we_jelly as 
+ select
+
+ -- JELLY IDS
+  jelly.id as jelly_id
+ , jelly_g.id as jelly_group_id
+ , jelly.parent_point_id as parent_jelly_id
+ , p_jelly.id as promotion_jelly_id
+
+ -- JELLY QUANTITY
+ , jelly.provision_type as jelly_provision_type
+ , case when jelly.provision_type = 'FLEXIBLE' then null else jelly.quantity end as jelly_qty
+
+ -- JELLY PURCHASE SOURCE & PAYMENT INFO
+ , jelly_g.channel
+ , jelly.wallet_type as jelly_wallet_type
+ , case when jelly.wallet_type = 'FREE' then
+        case when jelly.parent_point_id is null then 'FREE'
+        else case when jelly_p.parent_sale_type = 'NORMAL' then 'MANUAL' else 'AUTO' end
+        end 
+   else 
+        case when jelly_g.sale_type = 'NORMAL' then 'MANUAL' else 'AUTO' end 
+   end as charge_type
+ , case when jelly.wallet_type = 'FREE' then 
+        case when jelly.parent_point_id is null then null 
+        else jelly_p.parent_sale_type end
+   else jelly_g.sale_type end as sale_type
+ , case when jelly.wallet_type = 'FREE' then 
+        case when jelly.parent_point_id is not null then ""PG""
+             when wallet_system.payment_system = 'ADMIN' then wallet_system.payment_system
+             when wallet_system.payment_system in ('COUPON', 'VOTE') then 'REWARD'
+        else ""TBD"" end
+        when jelly.wallet_type = ""PAID"" then
+        case when wallet_system.payment_system = 'PAYMENT' then 'PG'
+             when wallet_system.payment_system = 'INAPP' then 'INAPP'
+             when jelly_g.sale_type = 'LACK' then 'PG'
+        else ""TBD"" end
+   end as pay_system
+ , case when jelly_g.channel = 'AOS' then 'GOOGLE_PLAYSTORE'
+        when jelly_g.channel = 'IOS' then 'APPLE_APPSTORE'
+        when jelly_g.channel = 'WEB' then 
+             case when jelly.wallet_type = ""FREE"" then
+                  case when jelly.parent_point_id is not null then 'JELLY_SHOP' -- 추가 적립 젤리
+                  else wallet_system.payment_system end -- 완전 프로모션
+             else 'JELLY_SHOP' end -- 젤리샵 충전 젤리
+   end as pay_method
+
+ , jelly.store_item_id as jelly_store_item_id
+ , jelly.product_id as product_id
+
+ -- JELLY PRODUCT INFO
+ , case when jelly.wallet_type = 'FREE' then jelly.display_name:ko else jelly.product_name end as jelly_product_name
+ , case when jelly.wallet_type = 'FREE' then
+        case when jelly.parent_point_id is null then concat_ws(""_"", wallet_system.payment_system, case when jelly.provision_type = 'FLEXIBLE' then 'VAR' else jelly.quantity end, jelly.wallet_type)
+        else concat_ws(""_"", jelly_p.parent_sale_type, jelly.quantity, jelly.wallet_type) end
+   else 
+        case when jelly_g.sale_type in ('LACK') then jelly_g.sale_type 
+        else concat_ws(""_"", jelly_g.sale_type, jelly.quantity) end
+   end as jelly_product_type
+ , jelly_g.display
+ , jelly.display_name:ko as jelly_display_name_ko
+ , jelly.display_name:en as jelly_display_name_en
+ , jelly.display_name:ja as jelly_display_name_ja
+
+ -- JELLY PRICE
+ , double(jelly_g.unit_price) as jelly_unit_price
+ , case when jelly.wallet_type == ""FREE"" then null else double(jelly_g.selling_unit_price) end as jelly_selling_unit_price
+ , double(jelly.display_price:ko) as jelly_display_price_ko
+ , double(jelly.display_price:en) as jelly_display_price_en
+ , double(jelly.display_price:ja) as jelly_display_price_ja
+
+ -- OTHER INFO
+ , case when jelly.is_active = true then 1 else 0 end as is_active
+ , case when 
+      jelly.display_name:ko rlike '테스트'
+   or lower(jelly.display_name:ko) rlike 'test'
+   or upper(jelly.display_name:ko) rlike 'QA'
+   or upper(jelly.product_name) rlike 'TEST'
+   then 1 else 0 end as is_test_jelly_product
+ , timestamp(jelly.activate_from_ms/1000) as activ_from_dt
+ , timestamp(jelly.activate_to_ms/1000) as activ_to_dt
+
+ from wev_prod.jelly.point                as jelly
+ left join wev_prod.jelly.point_group     as jelly_g  on jelly.group_id = jelly_g.id -- group metadata
+ left join wev_prod.jelly.promotion_point as p_jelly  on jelly.id = p_jelly.point_id
+ left join (
+   select distinct a.id as parent_jelly_id, b.id as parent_jelly_group_id, b.sale_type as parent_sale_type
+   from wev_prod.jelly.point as a
+   left join wev_prod.jelly.point_group as b
+   on a.group_id = b.id
+   where a.parent_point_id is null
+ ) as jelly_p on jelly.parent_point_id = jelly_p.parent_jelly_id -- parent jelly metadata
+ left join (
+      select distinct wallet_type, payment_system, point_id
+      from wev_prod.jelly.transaction
+      where point_id is not null
+ ) as wallet_system on jelly.id = wallet_system.point_id -- payment_system data
+ order by jelly_id desc
+ ;
+
+ select * 
+ from wev_prod.we_mart.we_jelly
+"

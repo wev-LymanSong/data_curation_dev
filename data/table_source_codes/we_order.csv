@@ -1,0 +1,543 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.we_ord
+2,md,,basic_info,"#### Basic Info
+* 일간 통합 구매 현황
+* Mart Secondary
+* DAILY APPEND
+* WIKI : [https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/2869755955/we+mart.we+order]
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2022-01-13 |박상민|마트/배치생성|
+|2022-01-20 |박상민|결제수단 관련 컬럼, 결제 순번 컬럼 추가 |
+|2022-06-09 |박상민|product_type 수정, 변수 추가 |
+|2022-07-18 |박상민|WV2 로직 대응 |
+|2022-12-06 |이현지|product_type로직 변경 |
+|2023-03-30 |이현지|phoning 추가 |
+|2023-05-12 |이현지|we_order 개편 |
+|2023-11-09 |송재영|dur_unit, promotion_unit 컬럼 추가|
+|2023-11-16 |송재영|wv_order에서 젤리 부분환급의 CX 추가에 따른 컬럼명 변경|
+|2024-03-15|데이터분석팀 이현지|is_fc 멤버십 중복가입 가능으로 로직 대응|
+
+###### Source Tables
+* we_mart.ws_order
+* we_mart.ws_goods_stock
+* we_mart.wv_order
+* we_mart.wv_media
+* we_meta.we_media_product
+* we_mart.wv_comm_user
+* we_mart.ws_fc_user_history
+* we_mart.we_user
+* we_mart.ph_subscr"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"spark.conf.set(""spark.sql.autoBroadcastJoinThreshold"" ,""-1"")
+
+key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"")
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'we_order', 
+  'service' : None, #default (None)
+  'partition' : ['part_date']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'overwrite', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+  'delete' : True, #default (False)
+  'delete_key' : 'part_date' #default (None)
+ }"
+6,md ,,etc, #### Main Query
+7,md ,,etc, ##### weverseshop
+8,py,,code,"# -- WS : weverseshop
+q_ws = f'''
+select
+    SS.*
+,	GDS.sale_price
+,	GDS.currency_code as sale_currency_code
+,	GDS.wbs_code
+,	'WS' as product_source
+,	'PG' as pay_system
+from
+(
+    select
+        nvl(SO.key_date, SX.key_date) as key_date
+    , nvl(SO.we_member_id, SX.we_member_id) as we_member_id
+    , nvl(SO.ws_user_id, SX.ws_user_id) as ws_user_id
+    , nvl(SO.ctry_code, SX.ctry_code) as ctry_code
+    , nvl(SO.ord_sheet_number, SX.ord_sheet_number) as ord_sheet_number
+    , nvl(SO.ord_item_id, SX.ord_item_id) as ord_item_id
+    , nvl(SO.sale_id, SX.sale_id) as sale_id
+    , nvl(SO.goods_option_id, SX.goods_option_id) as goods_option_id
+    , nvl(SO.goods_option_code, SX.goods_option_code) as goods_option_code
+    , nvl(SO.pay_method, SX.pay_method) as pay_method
+    , nvl(SO.currency_code, SX.currency_code) as currency_code
+    , nvl(SO.ship_ctry_code, SX.ship_ctry_code) as ship_ctry_code
+    , nvl(SO.pay_card_type, SX.pay_card_type) as pay_card_type
+    , nvl(SO.pay_mobile_provider, SX.pay_mobile_provider) as pay_mobile_provider
+    , nvl(SO.goods_cat, SX.goods_cat) as goods_cat
+    , nvl(SO.shop, SX.shop) as shop
+    , nvl(SO.we_art_id, SX.we_art_id) as we_art_id
+    , nvl(SO.we_art_name, SX.we_art_name) as we_art_name
+    , nvl(SO.sap_code, SX.sap_code) as sap_code
+    , nvl(SO.sale_stock_id, SX.sale_stock_id) as sale_stock_id
+    , nvl(SO.goods_code, SX.goods_code) as goods_code
+    , nvl(SO.goods_name, SX.goods_name) as goods_name
+    , nvl(SO.goods_option_name, SX.goods_option_name) as goods_option_name
+    , nvl(SO.album_qty, SX.album_qty) as album_qty
+    , nvl(SO.goods_upr_cat_id, SX.goods_upr_cat_id) as goods_upr_cat_id
+    , nvl(SO.goods_lwr_cat_id, SX.goods_lwr_cat_id) as goods_lwr_cat_id
+    , nvl(SO.goods_upr_cat_name, SX.goods_upr_cat_name) as goods_upr_cat_name
+    , nvl(SO.goods_lwr_cat_name, SX.goods_lwr_cat_name) as goods_lwr_cat_name
+    , nvl(SO.logi_cat, SX.logi_cat) as logi_cat
+    , nvl(SO.device_type, SX.device_type) as device_type
+    , nvl(SO.trade_co_name, SX.trade_co_name) as trade_co_name
+    , nvl(SO.ship_cost_type, SX.ship_cost_type) as ship_cost_type
+    , case when SO.key_date is not null then 1 else 0 end as is_pay
+    , case when SX.key_date is not null then 1 else 0 end as is_cx
+    , SO.pay_dt
+    , SO.pay_seq
+    , SO.pay_amt_krw
+    , SO.pay_amt
+    , SO.pay_qty
+    , SO.pay_album_qty
+    , SX.cx_dt
+    , SX.cx_pay_dt
+    , SX.cx_amt_krw
+    , SX.cx_amt
+    , SX.cx_qty
+    , SX.cx_album_qty
+
+    from
+    (-- ## WS pay
+            select *
+            , date(pay_dt) as key_date
+            , ord_item_amt_krw as pay_amt_krw
+            , ord_item_amt as pay_amt
+            , ord_item_qty as pay_qty
+            , album_qty * ord_item_qty as pay_album_qty
+            from we_mart.ws_order
+            where 1=1
+            and is_pay = 1
+    ) as SO 
+    full join
+    (-- ## WS cx
+            select *
+            , date(cx_dt) as key_date
+            , cx_dt
+            , pay_dt as cx_pay_dt
+            , ord_item_cx_amt as cx_amt
+            , ord_item_cx_amt_krw as cx_amt_krw
+            , ord_item_cx_qty as cx_qty
+            , album_qty * ord_item_cx_qty as cx_album_qty
+            from we_mart.ws_order
+            where 1=1
+            and is_pay = 1 and is_cx = 1
+    ) as SX
+    ON SO.key_date = SX.key_date and SO.ord_item_id = SX.ord_item_id
+
+) as SS
+left join
+(-- ## GDS : weverseshop 메타 정보
+    select *
+    , case when is_sale_hide = 1 then sale_upd_dt end as sale_end_dt
+    from we_mart.ws_goods_stock
+    where sale_id is not null
+) as GDS ON SS.sale_stock_id = GDS.sale_stock_id and SS.goods_option_id = GDS.goods_option_id and date(GDS.part_date) = '{key}'
+  '''
+ws_order = spark.sql(q_ws)"
+9,md ,,etc, ##### weverse
+10,py,,code,"# -- WV : weverse
+q_wv = f'''
+select
+	VV.*
+,	VV.product_id as sale_id
+,	VV.store_item_id as goods_option_id
+,	VV.product_name as goods_name
+,	CP.content_provider as trade_co_name
+,   WW.wbs_code as wbs_code
+,	'WV' as product_source
+,	'WEV' as shop
+from
+(
+    select distinct 
+    nvl(VO.key_date, VX.key_date) as key_date
+    , nvl(VO.we_member_id, VX.we_member_id) as we_member_id
+    , nvl(VO.wv_user_id, VX.wv_user_id) as wv_user_id
+    , nvl(VO.transaction_id, VX.transaction_id) as transaction_id
+    , nvl(VO.product_type, VX.product_type) as goods_cat
+    , nvl(VO.product_id, VX.product_id) as product_id
+    , nvl(VO.product_name, VX.product_name) as product_name
+    , nvl(VO.dur_type, VX.dur_type) as dur_type
+    , nvl(VO.dur_unit, VX.dur_unit) as dur_unit
+    , nvl(VO.dur_value, VX.dur_value) as dur_value
+    , nvl(VO.promotion_type, VX.promotion_type) as promotion_type
+    , nvl(VO.promotion_unit, VX.promotion_unit) as promotion_unit
+    , nvl(VO.promotion_value, VX.promotion_value) as promotion_value
+    , nvl(VO.cp_code, VX.cp_code) as cp_code
+    , nvl(VO.we_art_id, VX.we_art_id) as we_art_id
+    , nvl(VO.we_art_name, VX.we_art_name) as we_art_name
+    , nvl(VO.pay_system, VX.pay_system) as pay_system
+    , nvl(VO.pay_method, VX.pay_method) as pay_method
+    , nvl(VO.ctry_code, VX.ctry_code) as ctry_code
+    , nvl(VO.sale_price, VX.sale_price) as sale_price
+    , nvl(VO.sale_currency_code, VX.sale_currency_code) as sale_currency_code
+    , nvl(VO.currency_code, VX.currency_code) as currency_code
+    , nvl(VO.store_item_id, VX.store_item_id) as store_item_id
+    , case when VO.key_date is not null then 1 else 0 end as is_pay
+    , case when VX.key_date is not null then 1 else 0 end as is_cx
+    , VO.pay_dt
+    , VO.pay_amt_krw
+    , VO.pay_amt
+    , VO.pay_qty
+    , VO.pay_seq
+    , VX.cx_dt
+    , VX.cx_pay_dt
+    , VX.cx_amt_krw
+    , VX.cx_amt
+    , VX.cx_qty
+    from
+    (-- ## WV pay
+            select *
+            , date(pay_dt) as key_date
+            , paid_amt_krw as pay_amt_krw
+            , paid_amt as pay_amt
+            , currency_code
+            , ord_item_qty as pay_qty
+            , seq_all as pay_seq
+            from we_mart.wv_order
+            where 1=1
+            and is_pay = 1
+            and pay_method not in ('WEVERSE_SHOP')
+    ) as VO         
+    full join
+    (-- ## WV cx
+            select * except(pay_dt, cx_amt_krw, cx_amt, currency_code, cx_item_qty)
+            , date(cx_dt) as key_date
+            , pay_dt as cx_pay_dt
+            , cx_amt_krw
+            , cx_amt
+            , currency_code
+            , cx_item_qty as cx_qty
+            from we_mart.wv_order
+            where 1=1
+            and is_pay = 1 and is_cx = 1
+            and pay_method not in ('WEVERSE_SHOP')
+    ) as VX 
+    on VO.key_date = VX.key_date and VO.transaction_id = VX.transaction_id
+) as VV
+left join 
+(-- ## content provider 정보
+    select distinct product_id_int, cp_code, content_provider from we_meta.we_media_product
+) as CP on VV.product_id = CP.product_id_int and VV.cp_code = CP.cp_code
+left join
+(-- ## wbs_code 정보
+    select distinct store_item_id, wbs_code, part_date
+    from we_meta.we_digital_product
+    where store_item_id is not null
+) as WW on VV.store_item_id = WW.store_item_id and WW.part_date = '{key}'
+'''
+wv_order = spark.sql(q_wv)"
+11,md ,,etc, ##### phoning
+12,py,,code,"# -- PH : phoning
+q_ph = f'''
+select 
+	*
+,	product_id as sale_id
+,	product_name as goods_name
+,	'PH' as product_source
+,	'KRW' as currency_code
+,	'PHONING' as shop
+,	'KRW' as sale_currency_code
+,	'INAPP' as pay_system
+from 
+(
+    select
+    nvl(PO.key_date, PX.key_date) as key_date
+    , nvl(PO.account_id, PX.account_id) as we_member_id
+    , nvl(PO.ph_user_id, PX.ph_user_id) as ph_user_id
+    , nvl(PO.ctry_code, PX.ctry_code) as ctry_code
+    , nvl(PO.product_id, PX.product_id) as product_id
+    , nvl(PO.product_name, PX.product_name) as product_name
+    , nvl(PO.we_art_id, PX.we_art_id) as we_art_id
+    , nvl(PO.we_art_name, PX.we_art_name) as we_art_name
+    , nvl(PO.goods_cat, PX.goods_cat) as goods_cat
+    , nvl(PO.transaction_id, PX.transaction_id) as transaction_id
+    , nvl(PO.pay_method, PX.pay_method) as pay_method
+    , nvl(PO.sale_price, PX.sale_price) as sale_price
+    , case when PO.key_date is not null then 1 else 0 end as is_pay
+    , case when PX.key_date is not null then 1 else 0 end as is_cx
+    , PO.pay_dt
+    , PO.pay_amt as pay_amt_krw
+    , PO.pay_amt
+    , PO.pay_qty
+    , PX.cx_dt
+    , PX.cx_pay_dt
+    , PX.cx_amt as cx_amt_krw
+    , PX.cx_amt
+    , PX.cx_qty
+    from
+    (-- ## PAY
+            select a.*
+            , date(a.pay_dt) as key_date
+            , a.user_ctry as ctry_code
+            , case  when upper(a.market) = 'APPSTORE' then 'APPLE_APPSTORE'
+                    when upper(a.market) = 'PLAYSTORE' then 'GOOGLE_PLAYSTORE'
+                    else a.market end as pay_method
+            , c.title as product_name
+            , c.type as goods_cat
+            , 1 as pay_qty
+            from we_mart.ph_subscr a
+            left join product.product c on a.product_id = c.product_id
+            where 1=1
+            and a.is_pay = 1 and a.is_trial_pay = 0
+            and a.pay_amt > 0
+    ) PO
+    full join
+    (-- ## CX
+            select a.*
+            , date(a.cx_dt) as key_date
+            , a.pay_dt as cx_pay_dt
+            , a.user_ctry as ctry_code
+            , case  when upper(a.market) = 'APPSTORE' then 'APPLE_APPSTORE'
+                    when upper(a.market) = 'PLAYSTORE' then 'GOOGLE_PLAYSTORE'
+                    else a.market end as pay_method
+            , c.title as product_name
+            , c.type as goods_cat
+            , 1 as cx_qty
+            from we_mart.ph_subscr a
+            left join product.product c on a.product_id = c.product_id
+            where 1=1
+            and a.is_cx = 1 and a.is_trial_cx = 0
+            and a.cx_amt > 0
+    ) PX on PO.key_date = PX.key_date and PO.transaction_id = PX.transaction_id
+)
+'''
+ph_order = spark.sql(q_ph)"
+13,md ,,etc, ##### fc_user
+14,py,,code,"# -- FC : fc_user
+q_fc_user = f'''
+select 
+ord_sheet_num
+, we_member_id
+, we_art_id
+, shop
+, fc_id
+, fc_name
+, min(create_dt) as create_dt
+, min(expire_dt) as expire_dt
+from we_mart.ws_fc_user_history
+where 1=1
+and ord_status not in ('PAYMENT_FAILED')
+and is_cx_by_restore = 0
+group by 1,2,3,4,5,6
+'''
+spark.sql(q_fc_user).createOrReplaceTempView('fc_user')"
+15,md ,,etc, ##### ** merge(ws+wv+ph)
+16,py,,code,"# -- WS, WV, PH 합치기
+merge_set = ws_order.unionByName(wv_order, allowMissingColumns=True)
+merge_set = merge_set.unionByName(ph_order, allowMissingColumns=True)
+merge_set.createOrReplaceTempView('order')"
+17,py,,code,"query = f'''
+select distinct
+OO.*
+,   case when coalesce(FC.fc_id, FC_JP.fc_id, FC_US.fc_id) is not null then 1 else 0 end as is_fc
+,   first(coalesce(FC.fc_id, FC_JP.fc_id, FC_US.fc_id)) over(partition by OO.we_member_id, OO.we_art_id order by coalesce(FC.create_dt, FC_JP.create_dt, FC_US.create_dt) desc) as fc_id
+,   first(coalesce(FC.fc_name, FC_JP.fc_name, FC_US.fc_name)) over(partition by OO.we_member_id, OO.we_art_id order by coalesce(FC.create_dt, FC_JP.create_dt, FC_US.create_dt) desc) as fc_name
+,   string(key_date) as part_date
+,   timestamp(current_timestamp() + interval '9' hour) as run_timestamp
+from (
+      select
+          *
+      ,   case when goods_cat in ('KIT', 'MERCHBOX', 'MEMBERSHIP') then 'MEMBERSHIP'
+              when goods_cat = 'LIVE_TICKET' then 'LIVE_TICKET'
+              when logi_cat = 'ALBUM' then 'ALBUM'
+              when logi_cat = 'BOOK' or (logi_cat = 'MD' and goods_upr_cat_name = 'BOOK') then 'BOOK'
+              when logi_cat = 'CLOTHING' then 'CLOTHING'
+              when logi_cat = 'DVD' then 'DVD'
+              when goods_cat in ('TVOD', 'SVOD_GROUP', 'SVOD', 'VOD') then 'VOD'
+              when goods_cat in ('LIGHT_STICK') then 'LIGHT_STICK'
+              when goods_cat = 'POD' then 'POD'
+              when goods_cat is not null and product_source in ('WV','PH') then goods_cat
+              else 'MD' end as product_type
+      ,   case when is_pay = 1 then row_number() over(partition by we_member_id, is_pay order by pay_dt) end as we_pay_seq
+      from order
+) OO
+left join fc_user as FC on  OO.we_member_id = FC.we_member_id and OO.we_art_id = FC.we_art_id and FC.shop = 'GL'
+                        and nvl(OO.pay_dt, OO.cx_pay_dt) >= FC.create_dt
+                        and nvl(OO.pay_dt, OO.cx_pay_dt) < FC.expire_dt
+left join fc_user as FC_JP on  OO.we_member_id = FC_JP.we_member_id and OO.we_art_id = FC_JP.we_art_id and FC_JP.shop = 'JP'
+                        and nvl(OO.pay_dt, OO.cx_pay_dt) >= FC_JP.create_dt
+                        and nvl(OO.pay_dt, OO.cx_pay_dt) < FC_JP.expire_dt
+left join fc_user as FC_US on  OO.we_member_id = FC_US.we_member_id and OO.we_art_id = FC_US.we_art_id and FC_US.shop = 'US'
+                        and nvl(OO.pay_dt, OO.cx_pay_dt) >= FC_US.create_dt
+                        and nvl(OO.pay_dt, OO.cx_pay_dt) < FC_US.expire_dt
+
+where 1=1
+and OO.key_date = '{key}'
+'''
+fin_order = spark.sql(query)"
+18,py,,code,"fin_order = fin_order.select(
+    fin_order.key_date.cast('date'),
+    fin_order.we_member_id.cast('long'),
+    fin_order.ws_user_id.cast('long'),
+    fin_order.wv_user_id.cast('long'),
+    fin_order.ph_user_id.cast('long'),
+    fin_order.product_source.cast('string'),
+    fin_order.is_pay.cast('integer'),
+    fin_order.is_cx.cast('integer'),
+    fin_order.is_fc.cast('integer'),
+    fin_order.ctry_code.cast('string'),
+    fin_order.pay_dt.cast('timestamp'),
+    fin_order.cx_dt.cast('timestamp'),
+    fin_order.cx_pay_dt.cast('timestamp'),
+    fin_order.currency_code.cast('string'),
+    fin_order.pay_amt_krw.cast('double'),
+    fin_order.pay_amt.cast('double'),
+    fin_order.pay_qty.cast('long'),
+    fin_order.pay_album_qty.cast('long'),
+    fin_order.cx_amt_krw.cast('double'),
+    fin_order.cx_amt.cast('double'),
+    fin_order.cx_qty.cast('long'),
+    fin_order.cx_album_qty.cast('long'),
+    fin_order.we_art_id.cast('integer'),
+    fin_order.we_art_name.cast('string'),
+    fin_order.shop.cast('string'),
+    fin_order.product_type.cast('string'),
+    fin_order.ord_sheet_number.cast('long'),
+    fin_order.transaction_id.cast('string'),
+    fin_order.ord_item_id.cast('long'),
+    fin_order.sale_stock_id.cast('long'),
+    fin_order.sale_id.cast('long'),
+    fin_order.sale_price.cast('double'),
+    fin_order.sale_currency_code.cast('string'),
+    fin_order.wbs_code.cast('string'),
+    fin_order.sap_code.cast('string'),
+    fin_order.pay_system.cast('string'),
+    fin_order.pay_method.cast('string'),
+    fin_order.goods_code.cast('string'),
+    fin_order.goods_option_id.cast('string'),
+    fin_order.goods_option_code.cast('string'),
+    fin_order.goods_name.cast('string'),
+    fin_order.goods_option_name.cast('string'),
+    fin_order.goods_upr_cat_id.cast('long'),
+    fin_order.goods_lwr_cat_id.cast('long'),
+    fin_order.goods_upr_cat_name.cast('string'),
+    fin_order.goods_lwr_cat_name.cast('string'),
+    fin_order.dur_type.cast('string'),
+    fin_order.dur_unit.cast('string'),
+    fin_order.dur_value.cast('integer'),
+    fin_order.promotion_type.cast('string'),
+    fin_order.promotion_unit.cast('string'),
+    fin_order.promotion_value.cast('integer'),
+    fin_order.album_qty.cast('integer'),
+    fin_order.logi_cat.cast('string'),
+    fin_order.ship_ctry_code.cast('string'),
+    fin_order.ship_cost_type.cast('string'),
+    fin_order.device_type.cast('string'),
+    fin_order.trade_co_name.cast('string'),
+    fin_order.pay_card_type.cast('string'),
+    fin_order.pay_mobile_provider.cast('string'),
+    fin_order.pay_seq.cast('long'),
+    fin_order.we_pay_seq.cast('long'),
+    fin_order.fc_id.cast('long'),
+    fin_order.fc_name.cast('string'),
+    fin_order.part_date.cast('string'),
+    fin_order.run_timestamp.cast('timestamp')
+)"
+19,md,,just_heading,#### Run
+20,py,,code,"dflow = Dataflow(run_mode=run_mode, notifier=noti)
+dflow.run(dataframe=fin_order, table_info=table, option=option, buckets=['databricks'])"
+21,py,,code,"spark.sql(f'''
+OPTIMIZE we_mart.we_order 
+where part_date = '{key}'
+ZORDER BY (is_pay, pay_dt, cx_dt)
+''')"
+22,md,,just_heading,#### Appendix
+23,py,,code,"'''
+%sql
+create or replace table we_mart.we_order 
+(
+	key_date	date	comment	'기준일자'
+,	we_member_id	long	comment	'we_member_id'
+,	ws_user_id	long	comment	'ws_user_id'
+,	wv_user_id	long	comment	'wv_user_id'
+,	ph_user_id	long	comment	'ph_user_id'
+,	product_source	string	comment	'서비스구분(WS,WV,PH)'
+,	is_pay	integer	comment	'결제여부'
+,	is_cx	integer	comment	'취소여부'
+,	is_fc	integer	comment	'결제/취소시점 멤버십여부'
+,	ctry_code	string	comment	'결제시점 IP국가코드'
+,	pay_dt	timestamp	comment	'결제일시'
+,	cx_dt	timestamp	comment	'취소일시'
+,	cx_pay_dt	timestamp	comment	'취소건 결제일시'
+,	currency_code	string	comment	'결제통화'
+,	pay_amt_krw	double	comment	'판매액(KRW)'
+,	pay_amt	double	comment	'판매액'
+,	pay_qty	long	comment	'판매수량'
+,	pay_album_qty	long	comment	'판매앨범수량'
+,	cx_amt_krw	double	comment	'취소/환불액(KRW)'
+,	cx_amt	double	comment	'취소/환불액'
+,	cx_qty	long	comment	'취소/환불수량'
+,	cx_album_qty	long	comment	'취소/환불앨범수량'
+,	we_art_id	integer	comment	'we_art_id'
+,	we_art_name	string	comment	'we_art_name'
+,	shop	string	comment	'shop'
+,	product_type	string	comment	'product_type'
+,	ord_sheet_number	long	comment	'ord_sheet_number'
+,	transaction_id	string	comment	'transaction_id'
+,	ord_item_id	long	comment	'ord_item_id'
+,	sale_stock_id	long	comment	'sale_stock_id'
+,	sale_id	long	comment	'sale_id'
+,	sale_price	double	comment	'상품금액'
+,	sale_currency_code	string	comment	'상품통화'
+,	wbs_code	string	comment	'wbs_code'
+,	sap_code	string	comment	'sap_code'
+,	pay_system	string	comment	'pay_system'
+,	pay_method	string	comment	'pay_method'
+,	goods_code	string	comment	'goods_code'
+,	goods_option_id	string	comment	'goods_option_id'
+,	goods_option_code	string	comment	'goods_option_code'
+,	goods_name	string	comment	'상품명'
+,	goods_option_name	string	comment	'상품옵션명'
+,	goods_upr_cat_id	long	comment	'상위카테고리ID'
+,	goods_lwr_cat_id	long	comment	'하위카테고리ID'
+,	goods_upr_cat_name	string	comment	'상위카테고리명'
+,	goods_lwr_cat_name	string	comment	'하위카테고리명'
+,	dur_type	string	comment	'dur_type'
+,	dur_unit	string	comment	'dur_unit'
+,	dur_value	integer	comment	'dur_value'
+,	promotion_type	string	comment	'promotion_type'
+,	promotion_unit	string	comment	'promotion_unit'
+,	promotion_value	integer	comment	'promotion_value'
+,	album_qty	integer	comment	'앨범수량'
+,	logi_cat	string	comment	'물류카테고리'
+,	ship_ctry_code	string	comment	'배송국가'
+,	ship_cost_type	string	comment	'배송구분'
+,	device_type	string	comment	'device_type'
+,	trade_co_name	string	comment	'거래처'
+,	pay_card_type	string	comment	'결제카드타입'
+,	pay_mobile_provider	string	comment	'결제모바일통신사'
+,	pay_seq	long	comment	'각 서비스별 주문순번'
+,	we_pay_seq	long	comment	'전체 서비스 주문순번'
+,	fc_id	long	comment	'결제/취소시점 멤버십ID'
+,	fc_name	string	comment	'결제/취소시점 멤버십명'
+,	part_date	string	comment	'part_date'
+,	run_timestamp	timestamp	comment	'run_timestamp'
+) 
+partitioned by (part_date)
+comment ""WE 통합 주문""
+'''
+"

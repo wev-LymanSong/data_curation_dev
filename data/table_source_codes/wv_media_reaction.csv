@@ -1,0 +1,394 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.wv_media_
+2,md,,basic_info,"#### Basic Info
+* 일간 미디어 리액션 정보 
+* Mart Primary 
+* DAILY APPEND
+* WIKI : [https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/2868707593/we+mart.wv+media+react] 
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2024-07-03|송재영|we_user_compact => we_user로 변경|
+|2024-03-20|데이터분석팀 윤상혁|멤버십 국가샵 중복가입 대응|
+|2023-10-16|데이터분석팀 윤상혁|we_user -> we_user_compact로 변경|
+|2022-12-23 |송재영|상품 정보 삭제(중복 이슈)|
+|2022-10-18 |윤상혁|국가 마트 변경|
+|2022-07-18 |윤상혁|WV2 대응|
+|2021-01-04 |박상민|wv_media 수정에 따른 distinct 로직 변경 |
+|2021-12-22 |박상민|comment +9hr 적용|
+|2021-12-01 |박상민|FC 관련로직 수정|
+|2021-11-29 |박상민|마트생성/배치생성|
+
+
+###### Source Tables
+* weverse2.community_content_comment
+* weverse2.community_content_common_community_media_relation
+* weverse2.community_content_post_emotion_relation 
+* weverse2.community_content_comment_emotion_relation
+<!-- * weverse2.community_content_common_product_media_relation -->
+* weverse2.community_common_report 
+* weverse2.community_common_punish
+* we_mart.wv_media
+<!-- * we_mart.we_media_product -->
+* we_mart.we_user_compact
+* we_mart.wv_user_ctry_history
+* we_mart.ws_fc_user_history"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'wv_media_reaction', 
+  'service' : None, #default (None)
+  'partition' : ['part_comm_id', 'part_date']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'overwrite', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+}"
+6,md ,,etc, #### Main Query
+7,md ,,etc, ##### View
+8,py,,code,"v2 = f""""""
+select report_type, content_id
+from weverse2.community_common_report 
+where date(from_unixtime(last_reporting_at/1000 + 3600 * 9)) <= date('{key}')
+""""""
+spark.sql(v2).createOrReplaceTempView('REPORT')    "
+9,py,,code,"v3 = f""""""
+select punish_type
+     , content_id
+     , on_punish
+    from weverse2.community_common_punish
+    where date(from_unixtime(punished_at/1000 + 3600 * 9)) <= date('{key}')
+""""""
+spark.sql(v3).createOrReplaceTempView('PUNISH')                                      "
+10,py,,code,"query = f""""""
+select
+date('{key}') as key_date
+, nvl(CMT.cmnt_media_id, LKE.like_media_id) as media_id
+, replace(nvl(CMT.cmnt_post_id, LKE.like_post_id), 'post-', '') as post_id
+, MED.media_type
+, MED.section_type
+, MED.media_name
+, nvl(CMT.wv_user_id, LKE.wv_user_id) as wv_user_id
+, nvl(CMT.member_id, LKE.member_id) as member_id
+, UU.we_member_id
+, case when FC.fc_id is not null then 1 else 0 end as is_fc
+, FC.fc_id
+, CTRY.ip_ctry
+, MED.we_art_id
+, MED.we_art_name
+, cast(MED.comm_id as bigint) as comm_id
+, case when CMT.wv_user_id is not null OR LKE.wv_user_id is not null then 1 else 0 end as is_reaction  
+, case when CMT.wv_user_id is not null then 1 else 0 end as is_cmnt  
+, case when LKE.wv_user_id is not null then 1 else 0 end as is_like
+, CMT.is_cmnt_cmnt
+, CMT.is_cmnt_tags
+, CMT.tot_cmnt
+, CMT.media_cmnt
+, CMT.cmnt_cmnt
+, CMT.cmnt_reported
+, CMT.cmnt_blinded
+, CMT.cmnt_lang_cnt
+, CMT.cmnt_lang
+, LKE.tot_like
+, LKE.media_like
+, LKE.cmnt_like
+, MED.is_fc_only
+, MED.is_photo
+, cast(MED.media_dur as bigint) as media_dur
+, MED.is_pitem
+, bigint(MED.tvod_id)
+, MED.svod_id
+, bigint(MED.svod_group_id)
+, bigint(MED.paid_item_id)
+, MED.media_cat_ids as media_cat_id
+, MED.media_cat_name
+, cast(MED.media_rel_dt as timestamp) as media_rel_dt
+, cast(MED.cnt_photo as bigint) as cnt_photo
+, cast(MED.comm_id as bigint) as part_comm_id
+, string(nvl(CMT.cmnt_date, LKE.like_date)) as part_date
+, current_timestamp + interval '9' hour as run_timestamp
+from 
+-- CMT : comment 
+		(
+		select cmnt_date
+             , comm_id
+             , wv_user_id
+             , member_id
+             , null as cmnt_media_id
+             , cmnt_post_id
+             , media_type
+             , is_cmnt_cmnt
+             , is_cmnt_tags
+             , tot_cmnt
+             , post_cmnt as media_cmnt
+             , cmnt_cmnt
+             , cmnt_reported
+             , cmnt_blinded
+             , cmnt_lang_cnt
+             , cmnt_lang
+        from
+        (
+            select date(from_unixtime(a.created_at/1000 + 3600 * 9)) as cmnt_date
+                 , case when get_json_object(data, '$.rootId') is null then get_json_object(data, '$.parentId') else get_json_object(data, '$.rootId') end as cmnt_post_id 
+                 , cast(a.community_id as bigint) as comm_id
+                 , cast(regexp_extract(author_member_id, '[A-Z]+-[0-9]*-([0-9]*)', 1) as bigint) as wv_user_id
+                 , regexp_extract(author_member_id, '[A-Z]+-([0-9]*-[0-9]*)', 1) as member_id
+                 , max(case when get_json_object(data, '$.rootId') is null then 0 else 1 end) as is_cmnt_cmnt
+                 , max(0) as is_cmnt_tags 
+                 , count(1) as tot_cmnt
+                 , count(case when get_json_object(data, '$.rootId') is null then 1 end) as post_cmnt
+                 , count(case when get_json_object(data, '$.rootId') is not null then 1 end) as cmnt_cmnt
+                 , count(case when REPORT.content_id is not null then 1 end) 				as cmnt_reported
+                 , count(case when on_punish = 'true' then 1 end) as cmnt_blinded
+                 , count(distinct get_json_object(data, '$.writtenIn')) as cmnt_lang_cnt 
+                 , collect_list(distinct get_json_object(data, '$.writtenIn')) as cmnt_lang
+              from weverse2.community_content_comment a
+              left join REPORT on REPORT.content_id = concat(a.shard_id,'-',a.comment_local_id) and REPORT.report_type = 'COMMENT'
+              left join PUNISH on PUNISH.content_id = concat(a.shard_id,'-',a.comment_local_id) and PUNISH.punish_type = 'COMMENT'
+              where date(from_unixtime(created_at/1000 + 3600 * 9)) = date('{key}')
+              group by 1,2,3,4,5
+        ) a 
+        inner join weverse2.community_content_common_community_media_relation b on concat('post-',b.post_id) = a.cmnt_post_id
+		) as CMT
+--- LKE : 사용자 like 정보
+-- * weverse.like 의 경우 weverse.user_id 가 없어 community_user 활용
+FULL JOIN
+		(
+        select like_date
+             , null as like_media_id
+             , like_post_id
+             , media_type
+             , comm_id
+             , wv_user_id
+             , member_id
+             , tot_like
+             , post_like as media_like
+             , cmnt_like
+        from
+        (
+            select nvl(a.like_date, b.like_date) as like_date
+                 , nvl(a.like_post_id, b.like_post_id) as like_post_id
+                 , nvl(a.comm_id, b.comm_id) as comm_id
+                 , nvl(a.wv_user_id, b.wv_user_id) as wv_user_id
+                 , nvl(a.member_id, b.member_id) as member_id
+                 , nvl(a.post_like, 0) + nvl(b.cmnt_like, 0) as tot_like 
+                 , nvl(a.post_like, 0) as post_like
+                 , nvl(b.cmnt_like, 0) as cmnt_like
+            from 
+            (
+            select date(from_unixtime(created_at/1000 + 3600 * 9)) as like_date
+                 , concat('post-', post_id) as like_post_id
+                 , cast(regexp_extract(author_member_id, '[A-Z]+-([0-9]*)-[0-9]*', 1) as bigint) as comm_id
+                 , cast(regexp_extract(author_member_id, '[A-Z]+-[0-9]*-([0-9]*)', 1) as bigint) as wv_user_id
+                 , regexp_extract(author_member_id, '[A-Z]+-([0-9]*-[0-9]*)', 1) as member_id
+                 , count(distinct emotion_id) as post_like
+              from weverse2.community_content_post_emotion_relation 
+              where date(from_unixtime(created_at/1000 + 3600 * 9)) = '{key}'
+              group by 1,2,3,4,5
+            ) a
+            FULL JOIN
+            (
+              select date(from_unixtime(a.created_at/1000 + 3600 * 9)) as like_date
+                  , nvl(get_json_object(b.data, '$.rootId'), get_json_object(b.data, '$.parentId')) as like_post_id
+                  , cast(regexp_extract(a.author_member_id, r'[A-Z]+-([0-9]*)-[0-9]*', 1) as bigint) as comm_id
+                  , cast(regexp_extract(a.author_member_id, r'[A-Z]+-[0-9]*-([0-9]*)', 1) as bigint) as wv_user_id
+                  , regexp_extract(a.author_member_id, r'[A-Z]+-([0-9]*-[0-9]*)', 1) as member_id
+                  , count(distinct emotion_id) as cmnt_like
+              from weverse2.community_content_comment_emotion_relation a
+              left join weverse2.community_content_comment b on concat(b.shard_id,'-',b.comment_local_id) = a.comment_id
+              where date(from_unixtime(a.created_at/1000 + 3600 * 9)) = '{key}'
+              group by 1,2,3,4,5
+            ) b on b.like_post_id = a.like_post_id and b.member_id = a.member_id
+        ) a 
+        inner join weverse2.community_content_common_community_media_relation b on concat('post-',b.post_id) = a.like_post_id
+		) as LKE
+		ON CMT.member_id = LKE.member_id and CMT.cmnt_post_id  = LKE.like_post_id and CMT.cmnt_date = LKE.like_date
+-- MED : media 정보 
+LEFT JOIN 
+(
+      select distinct
+      concat('post-', post_id) as media_id, concat('post-', post_id) as post_id, is_fc_only, is_photo
+      , media_dur
+      , is_pitem
+      , null as paid_item_id
+      , null as tvod_id
+      , null as svod_id
+      , null as svod_group_id
+      , media_cat_ids
+      , null as media_cat_name
+      , media_rel_dt
+      , cnt_photo
+      , comm_id
+      , we_art_id
+      , we_art_name
+      , media_type
+      , media_name
+      , section_type
+      from we_mart.wv_media 
+      where part_date = '{key}'
+) as MED ON coalesce(CMT.cmnt_post_id, LKE.like_post_id) = MED.post_id 
+-- UU : user 정보
+LEFT JOIN we_mart.we_user as UU ON nvl(CMT.wv_user_id, LKE.wv_user_id) = UU.wv_user_id and UU.part_date = '{key}'
+-- FC : 멤버쉽 정보 
+LEFT JOIN 
+(
+select 
+distinct we_member_id
+       , we_art_id
+	   , last(fc_id)over(partition by we_member_id, we_art_id order by create_dt ROWS BETWEEN UNBOUNDED PRECEDING  AND UNBOUNDED FOLLOWING) as fc_id
+from we_mart.ws_fc_user_history 
+where part_date = '{key}' 
+and ord_status not in ('PAYMENT_FAILED')
+and is_cx_by_restore = 0  
+) as FC
+ON FC.we_member_id = UU.we_member_id and FC.we_art_id= MED.we_art_id
+-- CTRY : 국가정보 
+LEFT JOIN 
+(
+select
+distinct user_id, country as ip_ctry, row_number()over(partition by user_id order by next_created_at desc) as seq
+from 
+(
+    select distinct
+      user_id
+      , country
+      , ip
+      , date(created_at + interval 9 hour) as date_id
+      , date(nvl(lead(created_at + interval 9 hour) over (partition by user_id order by created_at), '2099-12-31 23:59:59')) as next_created_at 
+      , row_number() over(partition by user_id order by created_at desc) as seq
+      from we_mart.wv_user_ctry_history
+      where part_date <= '{key}'
+    ) as ctry1
+  where (date('{key}') between date_id and next_created_at ) and seq =1
+) as CTRY
+on CTRY.user_id = UU.wv_user_id and CTRY.seq = 1 
+"""""""
+11,md,,just_heading,#### Run
+12,py,,code,"dflow = Dataflow(run_mode=run_mode, notifier=noti)
+dflow.run(dataframe=spark.sql(query), table_info=table, option=option, buckets=['databricks'])"
+13,md,,description,#Appendix
+14,md,,just_heading,## create table
+15,py,,code,"q = """"""
+create or replace table we_mart.wv_media_reaction
+(
+    key_date		date			comment ""key_date""
+,	media_id		int				comment ""media_id""
+,	post_id			string			comment ""post_id""
+,	media_type		string			comment ""미디어 타입""
+,   section_type    string          comment ""post sectionType""
+,	media_name		string			comment ""미디어 명""
+,	wv_user_id		bigint			comment ""wv_user_id""
+,	member_id		string			comment ""member_id""
+,	we_member_id	bigint			comment ""we_member_id""
+,	is_fc			int				comment ""멤버쉽여부""
+,	fc_id			bigint			comment ""멤버쉽 id""
+,	ip_ctry			string			comment ""국가 코드""
+,	we_art_id		int				comment ""아티스트 id""
+,	we_art_name		string			comment ""아티스트 명""
+,	comm_id			bigint			comment ""커뮤니티 id""
+,	is_reaction		int				comment ""리액션 여부""
+,	is_cmnt			int				comment ""댓글 여부""
+,	is_like			int				comment ""좋아요 여부""
+,	is_cmnt_cmnt	int				comment ""대댓글 여부""
+,	is_cmnt_tags	int				comment ""댓글 태그 여부""
+,	tot_cmnt		bigint			comment ""댓글 수""
+,	media_cmnt		bigint			comment ""미디어 댓글 수""
+,	cmnt_cmnt		bigint			comment ""대댓글 수""
+,	cmnt_reported	bigint			comment ""신고 댓글 수""
+,	cmnt_blinded	bigint			comment ""블라인드 댓글 수""
+,	cmnt_lang_cnt	bigint			comment ""댓글 언어 수""
+,	cmnt_lang		array<string>	comment ""댓글 언어""
+,	tot_like		bigint			comment ""전체 좋아요""
+,	media_like		bigint			comment ""미디어 좋아요""
+,	cmnt_like		bigint			comment ""댓글 좋아요""
+,	is_fc_only		int				comment ""fc 회원전용 미디어 여부""
+,	is_photo		int				comment ""사진 여부""
+,	media_dur		bigint			comment ""미디어 재생시간""
+,	is_pitem		int				comment ""구매 미디어 여부""
+,	tvod_id			bigint			comment ""tvod_id""
+,	svod_id			bigint			comment ""svod_id""
+,	svod_group_id	bigint			comment ""svod_group_id""
+,	paid_item_id	bigint			comment ""paid_item_id""
+,	media_cat_id	array<int>		comment ""media_cat_id""
+,	media_cat_name	array<string>	comment ""미디어 카데고리 명""
+,	media_rel_dt	timestamp		comment ""미디어 릴리즈 일시""
+,	cnt_photo		bigint			comment ""미디어 사진 수""
+,	part_comm_id	bigint			comment ""part_comm_id""
+,	part_date		string			comment ""part_date""
+,	run_timestamp	timestamp		comment ""run_timestamp""
+) 
+partitioned by (part_comm_id, part_date)
+comment ""위버스 사용자 미디어 리액션""
+""""""
+#spark.sql(q)"
+16,md,,description,##WV1 마이그레이션
+17,py,,code,"q = """"""
+select a.key_date			
+,	a.media_id	
+,   b.post_id as post_id
+,	a.media_type		
+,	a.media_name		
+,	a.wv_user_id		
+,	a.we_member_id	
+,   concat(a.comm_id,'-',a.wv_user_id) as member_id
+,	a.is_fc			
+,   a.fc_id        
+,   a.ip_ctry      
+,	a.we_art_id		
+,	a.we_art_name		
+,	a.comm_id			
+,	a.is_reaction		
+,	a.is_cmnt			
+,	a.is_like			
+,	a.is_cmnt_cmnt	
+,	a.is_cmnt_tags	
+,	a.tot_cmnt		
+,	a.media_cmnt		
+,	a.cmnt_cmnt		
+,	a.cmnt_reported
+,	a.cmnt_blinded	
+,	a.cmnt_lang_cnt
+,	a.cmnt_lang		
+,	a.tot_like		
+,	a.media_like		
+,	a.cmnt_like		
+,	a.is_fc_only		
+,	a.is_photo		
+,	a.media_dur		
+,	a.is_pitem		
+,	a.tvod_id			
+,	a.svod_id			
+,	a.svod_group_id
+,	a.paid_item_id	
+,	array(cast(a.media_cat_id as int)) as media_cat_id
+,	array(a.media_cat_name) as media_cat_name
+,	a.media_rel_dt	
+,	a.cnt_photo		
+,	a.part_comm_id	
+,	a.part_date		
+,	a.run_timestamp 
+from we_mart_wv1.wv_media_reaction a
+left join we_mart.wv_media b on b.media_id = a.media_id
+""""""
+#df = spark.sql(q)
+#df.write.mode('overwrite').format('delta').partitionBy('part_comm_id', 'part_date').saveAsTable('we_mart.wv_media_reaction')"
+18,py,,code,"#q =  """"""select * from we_mart.wv_media_reaction """"""
+#df = spark.sql(q)
+#df.write.mode('overwrite').format('delta').partitionBy('part_comm_id', 'part_date').saveAsTable('we_mart_wv1.wv_media_reaction')"
+19,sql,,code," -- alter table we_mart.wv_media_reaction add columns (section_type string comment ""post sectionType"" after media_type)
+"

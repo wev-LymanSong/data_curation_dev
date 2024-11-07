@@ -1,0 +1,282 @@
+,cell_type,cell_title,role,codes
+1,md,,basic_info,"### we_mart.wv_vod_play
+#### Basic Info
+* VOD, LIVE to VOD, Youtube 재생 서버로그 마트
+    * Youtube는 재생로그(/join, /leave)가 남지 않아 post_read만 존재
+* MART PRIMARY
+* DAILY OVERWRITE
+
+
+###### history
+|date|contributor|comments|
+|----|----|----|
+|2023-03-28|데이터분석팀 이현지|create mart table|
+|2023-05-16|데이터분석팀 송재영|로직 개선: 1. distinct 빼기 2. post_id<=>product_id 집계 array로 변경 후 join|
+|2023-05-17 |송재영| wv_order 소스 테이블 변경에 따른 컬럼명 수정 |
+|2024-07-03|송재영|we_user_compact => we_user로 변경|
+
+
+###### Source Tables
+* we_mart.wv_server_log_base
+* we_mart.wv_media
+* we_mart.wv_live
+* we_mart.we_artist
+* weverse2.user_"
+2,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+3,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"")
+
+noti = {
+    'channel' : channel,
+    'token' : slack_token
+}
+
+option = {
+    'date' : key, 
+    'format':'delta',
+    'mode': 'overwrite',
+    'period': 'daily',
+    'noti' : True,
+    'delete' : True,
+    'delete_key' : 'part_date'
+}
+
+table = {
+    'database' : 'we_mart',
+    'table_name' : 'wv_vod_play', 
+    'service' : 'weverse',
+    'partition' : ['part_date']
+}"
+4,md ,,etc, ##### Main
+5,py,,code,"# VOD 구매내역
+q_auth = f'''
+select
+nvl(wv.product_id, cp.product_id) as product_id
+, nvl(wv.user_id, cp.user_id) as user_id
+, nvl(wv.s_dt, cp.s_dt) as s_dt
+, nvl(wv.e_dt, cp.e_dt) as e_dt
+
+from (
+      -- wv_order
+      select 
+      b.product_id
+      , a.user_id
+      , a.s_dt
+      , a.e_dt
+      from (
+            select distinct
+            product_id
+            , wv_user_id as user_id
+            , started_dt - interval 9 hours as s_dt
+            , max(end_dt - interval 9 hours) as e_dt
+            from (
+                  select *
+                  , case when is_cx = 1 and product_type like 'SVOD%' then cx_dt
+                         when is_cx = 1 and product_type like 'TVOD' then started_dt - interval 1 second
+                         else ended_dt end as end_dt
+                  from we_mart.wv_order
+                  where is_pay = 1
+            ) group by 1,2,3
+      ) a
+      left join (
+            select distinct product_id, media_product_id
+            from we_meta.we_media_product
+            where part_date = '{key}'
+      ) b on a.product_id = b.media_product_id
+) wv
+full join 
+(
+      -- coupon
+      select distinct 
+      b.product_id
+      , d.wv_user_id as user_id
+      , a.cp_used_dt as s_dt
+      , timestamp('2999-12-31T00:00:00') as e_dt
+      from coupon.tb_cp_used a
+      inner join (
+            select distinct product_id, cp_plan_id
+            from we_meta.we_media_product
+            where part_date = '{key}'
+      ) b on a.cp_plan_id = b.cp_plan_id
+      left join we_mart.we_user d on d.we_member_id = a.usr_id and d.part_date = '{key}' and d.we_member_id is not null
+) cp
+on wv.product_id = cp.product_id
+and wv.user_id = cp.user_id
+and wv.s_dt = cp.s_dt
+and wv.e_dt = cp.e_dt
+'''
+spark.sql(q_auth).createOrReplaceTempView('auth')"
+6,py,,code,"q = f'''
+select *
+from (
+
+    select
+    timestamp(current_timestamp() + interval '9' hour)  as run_timestamp
+    , part_date
+    , date_id
+    , hour
+    , minute
+    , datetime
+    , we_member_id
+    , wv_user_id
+    , device_id
+    , platform
+    , os
+    , gcc as ctry_code
+    , post_id
+    , string(video_id) as video_id
+    , we_art_id
+    , comm_id
+    , is_fc_only
+    , is_pitem
+    , product_id
+    , section_type
+    , media_type
+    , is_pay
+    , max(case when is_join > 0 then 1 end) as is_join
+    , max(case when is_post_read > 0 then 1 end) as is_post_read
+    , sum(is_join) as join_cnt
+    , sum(is_post_read) as post_read_cnt
+    , sum(case when url like '%join' and u_post_url like '%leave' then to_unix_timestamp(u_leave_dt) - to_unix_timestamp(log_dt) end) as u_sum_play_time
+    , sum(case when url like '%join' and d_post_url like '%leave' then to_unix_timestamp(d_leave_dt) - to_unix_timestamp(log_dt) end) as d_sum_play_time
+
+    from (
+        select *
+        , lead(log_dt) over(partition by post_id, wv_user_id, play_url order by log_dt) as u_leave_dt
+        , lead(url) over(partition by post_id, wv_user_id, play_url order by log_dt) as u_post_url
+        , lead(log_dt) over(partition by post_id, wv_user_id, device_id, play_url order by log_dt) as d_leave_dt
+        , lead(url) over(partition by post_id, wv_user_id, device_id, play_url order by log_dt) as d_post_url   
+
+        from (
+            select
+            a.date_id
+            , a.hour
+            , minute(a.log_dt) as minute
+            , date_format(a.log_dt + interval 9 hours, 'yyyy-MM-dd HH:mm') as datetime
+            , a.log_dt
+            , a.user_id_fill as wv_user_id
+            , a.user_info_device_id as device_id
+            , a.platform
+            , a.os
+            , a.gcc
+            , a.url
+            , case when a.url in ('/video/v1.0/join','/video/v1.0/leave') then 1 else 0 end as play_url
+            , a.is_join
+            , a.is_leave
+            , case when a.url rlike r'(\/post\/(.*)\/post-\d+-\d+\/read)' then 1 end as is_post_read
+            , a.post_id
+            , b.video_id
+            , b.we_art_id
+            , b.comm_id
+            , b.is_fc_only
+            , b.section_type
+            , b.is_pitem
+            , case when b.media_type = 'YOUTUBE' then 'YOUTUBE' else 'VOD' end as media_type
+            , nvl(d.account_id, d.before_account_id) as we_member_id
+            , a.date_id as part_date
+            , first_value(f.product_id) over(partition by a.post_id, a.user_id_fill, a.log_dt order by f.product_id) as product_id
+            , max(case when f.user_id is not null then 1 else 0 end) over(partition by a.post_id, a.user_id_fill, a.log_dt) as is_pay
+            
+            from we_mart.wv_server_log_base a
+            inner join we_mart.wv_media b on a.post_id = b.post_id and b.post_id is not null
+            left join we_mart.wv_live c on a.post_id = c.post_id
+            left join weverse2.user_user d on a.user_id_fill = d.id
+            left join (
+                select post_id, collect_set(product_id) as product_ids
+                from weverse2.community_content_common_product_media_relation
+                group by 1
+            ) e on a.post_id = e.post_id
+            left join auth f on array_contains(e.product_ids, f.product_id) = true
+            and a.user_id_fill = f.user_id and a.log_dt between f.s_dt and f.e_dt
+            
+            where 1=1
+            and a.date_id = '{key}'
+            and b.part_date = '{key}'
+            and b.media_type <> 'IMAGE'
+            and a.log_dt >= nvl(c.end_dt - interval 9 hours, b.media_cre_dt - interval 9 hours)
+            and (
+                (a.url in ('/video/v1.0/join','/video/v1.0/leave') and a.media_type = 'VOD')
+                or
+                a.url rlike r'(\/post\/(.*)\/post-\d+-\d+\/read)'
+            )
+        ) 
+    )
+    group by
+    part_date
+    , date_id
+    , hour
+    , minute
+    , datetime
+    , we_member_id
+    , wv_user_id
+    , device_id
+    , platform
+    , os
+    , gcc
+    , post_id
+    , video_id
+    , we_art_id
+    , comm_id
+    , is_fc_only
+    , is_pitem
+    , product_id
+    , section_type
+    , media_type
+    , is_pay
+
+)
+where 1=1
+and (
+    join_cnt > 0 
+    or
+    post_read_cnt > 0
+    or
+    u_sum_play_time > 0
+    or
+    d_sum_play_time > 0
+    )
+'''"
+7,py,,code,"# RUN MAIN QUERY
+b = Dataflow(run_mode=run_mode, notifier=noti)
+b.run(dataframe=spark.sql(q), table_info=table, option=option, buckets=['databricks'])"
+8,md ,,etc," ##### Appendix
+ * create table"
+9,py,,code,"create = '''
+create or replace table we_mart.wv_vod_play (
+	run_timestamp	timestamp
+,	part_date	string
+,	date_id	string	comment	's_log.date_id(KST)'
+,	hour	string	comment	'hour(KST)'
+,	minute	int	comment	'minute(KST)'
+,	datetime	string		
+,	we_member_id	bigint		
+,	wv_user_id	string		
+,	device_id	string		
+,	platform	string	comment	'접속 플랫폼'
+,	os	string	comment	'접속 OS'
+,	ctry_code	string	comment	's_log.gcc'
+,	post_id	string		
+,	video_id	string		
+,	we_art_id	int	comment	'아티스트id'
+,	comm_id	int	comment	'커뮤니티id'
+,	is_fc_only	int	comment	'커뮤니티only LIVE여부'
+,	is_pitem	int	comment	'유무료 여부'
+,	product_id	string
+,	section_type	string
+,	media_type	string
+,	is_pay	int	comment	'VOD 구매여부'
+,	is_join	int	comment	'재생 여부'
+,	is_post_read	int	comment	'조회 여부'
+,	join_cnt	bigint	comment	'재생수'
+,	post_read_cnt	bigint	comment	'조회수'
+,	u_sum_play_time	bigint	comment	'유저별 VOD시청 시간'
+,	d_sum_play_time	bigint	comment	'유저,기기별 VOD시청 시간'
+)
+partitioned by (part_date)
+comment 'VOD, LIVE to VOD, Youtube 재생 서버로그 마트'
+'''
+# spark.sql(create)
+"

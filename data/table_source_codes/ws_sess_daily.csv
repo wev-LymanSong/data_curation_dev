@@ -1,0 +1,279 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.ws_sess_daily
+2,md,,basic_info,"#### Basic Info
+* 위버스샵 session 처리 마트
+* Mart Primary
+* DAILY APPEND
+
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2023-11-06 |박상민| 마트 생성, 10월 데이터 이후만 backfill 예정  |
+
+###### Source Tables
+* wev_prod.service_log.weplyapi_client_log
+* wev_prod.we_mart.we_artist
+* wev_prod.we_mart.ws_fc_user_history "
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"from pyspark.sql import functions as f
+from pyspark.sql.window import Window
+
+key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'ws_sess_daily', 
+  'service' : 'weverseshop', #default (None)
+  'partition' : ['part_date']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'overwrite', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+  'delete' : True, #default (False)
+  'delete_key' : 'part_date' #default (None)
+ }"
+6,md ,,etc, #### Main Query
+7,md,,just_heading,##### import data
+8,py,,code,"
+# 클라이언트 로그
+q_log = f""""""select
+timestamp(unix_timestamp(timestamp(p_timestamp))) as log_dt
+, *
+from wev_prod.service_log.weplyapi_client_log
+where date_id = '{key}'
+""""""
+df_raw = spark.sql(q_log)
+
+# 아티스트 정보
+q_art = f""""""select ws_art_id, we_art_id, we_art_name from wev_prod.we_mart.we_artist """"""
+df_art = spark.sql(q_art)
+
+# 멤버십 가입정보 
+q_fc = f""""""select distinct we_art_id as we_art_id_y, we_member_id
+            from wev_prod.we_mart.ws_fc_user_history where part_date = '{key}' """"""
+
+df_fc = spark.sql(q_fc)
+"
+9,md,,just_heading,##### query
+10,md,,just_heading,###### 1.파티션 정의
+11,py,,code,"##############################
+#####  파티션 정의 
+##############################
+
+### 1차 유저 id 채우기 
+win_account_1a = Window.partitionBy(""user_device_id"").orderBy(f.desc('log_dt')).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+win_account_1b = Window.partitionBy(""user_device_id"").orderBy(f.asc('log_dt')).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+
+### account 세션 생성
+win_dt_account = Window.partitionBy(""account_fill_1"").orderBy(""log_dt"")
+
+### dvc_id 복구 
+win_dvc_fill_a  = Window.partitionBy(""account_fill_1"", ""account_sess_seq"").orderBy(f.desc('log_dt')).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+win_dvc_fill_b  = Window.partitionBy(""account_fill_1"", ""account_sess_seq"").orderBy(f.asc('log_dt')).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+win_dvc_type    = Window.partitionBy(""new_dvc_id"", ""account_sess_seq"")
+
+## sess_id 생성 
+win_sess_1 = Window.partitionBy(""new_dvc_id"", ""date_id"").orderBy(""log_dt"")
+win_sess_2 = Window.partitionBy(""new_dvc_id"", ""date_id"", ""sess_seq"")
+
+## account_id 다시 채우기 
+win_account_2a = Window.partitionBy(""sess_id"").orderBy(f.desc('log_dt')).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+win_account_2b = Window.partitionBy(""sess_id"").orderBy(f.asc('log_dt')).rowsBetween(Window.unboundedPreceding, Window.currentRow)
+
+# user_sess 
+win_sess = Window.partitionBy(""sess_id"")
+win_user_sess = Window.partitionBy(""sess_id"", ""account_fill"")
+
+# sess_last
+win_sess_last = Window.partitionBy(""sess_id"").orderBy('log_dt').rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)"
+12,md,,just_heading,###### 2.세션 정보 생성 
+13,py,,code,"# 원본 불러오기 
+df = df_raw
+
+# account_id_fil_1 : user_device_id 이용 user_id 1차 필터링 
+df = df\
+        .withColumn('account_fill_1a', f.last('s_wemember_id', ignorenulls=True).over(win_account_1a))\
+        .withColumn('account_fill_1b', f.last('s_wemember_id', ignorenulls=True).over(win_account_1b))\
+        .withColumn('account_fill_1', f.when(f.col(""account_fill_1a"").isNull(), f.col(""account_fill_1b"")).otherwise(f.col(""account_fill_1a"")) )
+
+# account_id 세션 생성  
+df = df\
+        .withColumn(""is_account_sess"", f.when(f.lag(""log_dt"").over(win_dt_account) < (f.col(""log_dt"")  - f.expr(""INTERVAL 30 MINUTES"")), 1).otherwise(0))\
+        .withColumn(""account_sess_seq"", f.sum(""is_account_sess"").over(win_dt_account) + 1)
+
+# new_devicde_id 생성
+# wv_device_id not null 
+df = df\
+        .withColumn('valid_dvc_id', f.expr(""""""case when (wv_device_id is not null) then wv_device_id when (s_device_type = 'mweb' and wv_device_id is not null) then null else user_device_id end""""""))\
+        .withColumn('dvc_fill_a', f.last('valid_dvc_id', ignorenulls=True).over(win_dvc_fill_a))\
+        .withColumn('dvc_fill_b', f.last('valid_dvc_id', ignorenulls=True).over(win_dvc_fill_b))\
+        .withColumn('new_dvc_id', f.when(f.col(""dvc_fill_a"").isNull(), f.col(""dvc_fill_b"")).otherwise(f.col(""dvc_fill_a"")) )
+
+# 세션 변수 만들기
+df = df\
+        .withColumn(""is_new_sess"", f.when(f.lag(""log_dt"").over(win_sess_1) < (f.col(""log_dt"")  - f.expr(""INTERVAL 30 MINUTES"")), 1).otherwise(0))\
+        .withColumn(""sess_seq"", f.sum(""is_new_sess"").over(win_sess_1) + 1)\
+        .withColumn(""sess_start_dt"", f.min(f.col(""log_dt"")).over(win_sess_2))\
+        .withColumn(""sess_end_dt"", f.max(f.col(""log_dt"")).over(win_sess_2))\
+        .withColumn(""sess_id"", f.expr(""""""concat(string(date_format(sess_start_dt + interval '9' hour, 'yyyyMMddHHmmssSSS')) , '|',  new_dvc_id) """"""))
+
+# account_id & user_id 다시 채우기 
+df = df\
+        .withColumn('account_fill_a', f.last('s_wemember_id', ignorenulls=True).over(win_account_2a))\
+        .withColumn('account_fill_b', f.last('s_wemember_id', ignorenulls=True).over(win_account_2b))\
+        .withColumn('account_fill', f.when(f.col(""account_fill_a"").isNull(), f.col(""account_fill_b"")).otherwise(f.col(""account_fill_a"")))\
+        .withColumn('user_id_matched', f.when(f.col(""account_fill"") == f.col(""s_wemember_id""), f.col(""s_user_id"")).otherwise(None))
+
+        
+# user_sess 생성 
+df = df\
+        .withColumn(""user_sess_id"", f.expr(""""""case when account_fill is null then sess_id else concat(sess_id , '|',  account_fill ) end """"""))\
+        .withColumn(""user_sess_start_dt"", f.min(f.col(""log_dt"")).over(win_user_sess))\
+        .withColumn(""user_sess_end_dt"", f.max(f.col(""log_dt"")).over(win_user_sess))\
+        .withColumn('user_id_fill',f.max(f.col(""user_id_matched"")).over(win_user_sess))
+
+
+# 체류시간
+df = df\
+        .withColumn('sess_dur', f.unix_timestamp(f.col('sess_end_dt')) -  f.unix_timestamp(f.col('sess_start_dt')) + 1 )\
+        .withColumn('user_sess_dur', f.unix_timestamp(f.col('user_sess_end_dt')) -  f.unix_timestamp(f.col('user_sess_start_dt')) + 1 )
+
+#df.createOrReplaceTempView('output')    "
+14,md,,just_heading,###### 3. 기타 디멘젼 추가 
+15,py,,code,"# 세션 추가 정보
+df = df\
+        .withColumn('is_sess_login', f.expr(""""""case when account_fill is not null then 1 else 0 end""""""))\
+        .withColumn('is_device_login', f.max('is_sess_login').over(Window.partitionBy(""new_dvc_id"")))
+
+
+# 디바이스 추가 정보 
+
+## new_dvc_id 기준 동일 값 생성
+df = df\
+        .withColumn('valid_dvc_type',   f.expr(""""""case when (new_dvc_id = user_device_id) or (wv_device_id is not null) then s_device_type else null end""""""))\
+        .withColumn('valid_app_ver',    f.expr(""""""case when (new_dvc_id = user_device_id) or (wv_device_id is not null) then s_app_version else null end""""""))\
+        .withColumn('valid_os',         f.expr(""""""case when (new_dvc_id = user_device_id) or (wv_device_id is not null) then platform else null end""""""))\
+        .withColumn('is_wv',            f.when(df.wv_device_id.isNotNull(), 1).otherwise(0))
+        
+
+## 최종값
+df = df\
+        .withColumn('app_ver', f.last('valid_app_ver', ignorenulls=True).over(win_sess_last))\
+        .withColumn('platform', f.last('valid_dvc_type', ignorenulls=True).over(win_sess_last))\
+        .withColumn('os', f.last('valid_os', ignorenulls=True).over(win_sess_last))\
+
+
+
+## 위버스랑 변수값 통일 
+df = df\
+        .withColumn('platform_2',  f.expr(""""""case when platform in ('android', 'ios') then 'APP' when platform = 'web' then 'PC' else upper(platform) end """"""))\
+        .withColumn('os_2',  f.expr(""""""case when os = 'Android' then 'AOS' else upper(os) end """"""))
+
+# 국가 추출 ctry
+## 유저 국가/언어
+win_user_ctry = Window.partitionBy(""user_id_fill"").orderBy(f.col(""is_sess_login"").asc(), f.col(""sess_id"").asc()).rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
+df = df.withColumn('user_ctry', f.last('s_user_country', ignorenulls=True).over(win_user_ctry))
+df = df.withColumn('user_lang', f.last('s_app_language', ignorenulls=True).over(win_user_ctry))
+
+## 세션국가
+win_sess_ctry = Window.partitionBy(""sess_id"").orderBy(f.col(""log_dt"").asc()).rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
+df = df.withColumn('sess_ctry', f.last('s_user_country', ignorenulls=True).over(win_sess_ctry))
+df = df.withColumn('sess_lang', f.last('s_app_language', ignorenulls=True).over(win_sess_ctry))
+
+# we_artist
+df = df.join(df_art, (df.label_artist_id == df_art.ws_art_id), 'left') 
+
+# fc 
+df = df.join(df_fc, (df.we_art_id == df_fc.we_art_id_y) & (df.account_fill == df_fc.we_member_id), 'left') 
+df = df.withColumn('is_fc', f.when(df.we_member_id.isNotNull(), 1).when(df.we_member_id.isNull() & df.account_fill.isNotNull(), 0).otherwise(None))"
+16,md,,just_heading,###### 4. 데이터 정리
+17,py,,code,"# 정리
+df = df.select(f.col('date_id').cast('date').alias('key_date'),
+        f.col('user_id_fill').alias('ws_user_id'),    
+        f.col('account_fill').alias('account_id'),   
+        f.col('new_dvc_id').alias('device_id'),  
+        f.col('is_wv'),
+        f.col('user_ctry'),
+        f.col('user_lang'),
+        f.col('sess_ctry'),
+        f.col('sess_lang'),
+        f.col('ws_art_id'),
+        f.col('we_art_id'),
+        f.col('we_art_name'),
+        f.col('shop_enum').alias('shop'), 
+        f.col('is_device_login'),
+        f.col('is_sess_login'),  
+        f.col('sess_id'),        
+        f.col('sess_start_dt'),
+        f.col('sess_end_dt'),
+        f.col('sess_dur'),
+        f.col('user_sess_id'),
+        f.col('user_sess_start_dt'),
+        f.col('user_sess_end_dt'),
+        f.col('user_sess_dur'),        
+        f.col('platform_2').alias('platform'),
+        f.col('os_2').alias('os'),
+        f.col('app_ver'),
+        f.col('date_id').alias('part_date')        
+        ).dropDuplicates()
+
+
+# 처리시간 
+df = df.withColumn('run_timestamp', f.current_timestamp())
+
+#df.createOrReplaceTempView('output')"
+18,md,,just_heading,#### Run
+19,py,,code,"dflow = Dataflow(run_mode=run_mode, notifier=noti)
+dflow.run(dataframe = df, table_info = table, option=option, buckets=['databricks'])
+print(option)"
+20,md,,just_heading,#### Appendix
+21,py,,code,"""""""
+create table wev_prod.we_mart.ws_sess_daily
+(
+key_date	date	comment ""방문일자""
+,	ws_user_id	string	comment ""shop user_id""
+,	account_id	string	comment ""account_id""
+,	device_id	string	comment ""기기id(브라우저id)""
+,	is_wv	int	comment ""위버스 방문자 여부 ""
+,	user_ctry	string	comment ""유저 접속국가""
+,	user_lang	string	comment ""유저 언어""
+,	sess_ctry	string	comment ""session 접속국가(최종)""
+,	sess_lang	string	comment ""세션 언어""
+,	ws_art_id	bigint	comment ""위버스샵 id""
+,	we_art_id	int	comment ""아티스트id""
+,	we_art_name	string	comment ""아티스트명""
+,	shop	string	comment ""shop""
+,	is_device_login	int	comment ""device 로그인여부""
+,	is_sess_login	int	comment ""sess 로그인 여부""
+,	sess_id	string	comment ""로그시작일시(yyyyMMddHHmmssSSS)|user_info_device_id""
+,	sess_start_dt	timestamp	comment ""세션id 최초일시(UTC)""
+,	sess_end_dt	timestamp	comment ""세션id 최종일시(UTC)""
+,	sess_dur	bigint	comment ""세션 체류 시간""
+,	user_sess_id	string	comment ""session_id + user_id""
+,	user_sess_start_dt	timestamp	comment ""user_sess_id 시작일시(UTC)""
+,	user_sess_end_dt	timestamp	comment ""user_sess_id 종료일시(UTC)""
+,	user_sess_dur	bigint	comment ""user_session 체류시간""
+,	platform	string	comment ""플랫폼""
+,	os	string	comment ""OS""
+,	app_ver	string	comment ""app_ver""
+,	part_date	string	comment ""part_date""
+,	run_timestamp	timestamp	comment ""배치일시(UTC)""
+
+) 
+partitioned by (part_date)
+comment ""SHOP 일간 세션 정보""
+""""""
+"

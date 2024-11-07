@@ -24,6 +24,7 @@
 |2024-01-02|데이터분석팀 이현지|항목 추가 및 ws_goods_stock_hourly 코드 병합|
 |2024-03-08|데이터분석팀 이현지|goods_cat='POD' 로직 수정|
 |2024-03-08|데이터분석팀 이현지|항목 추가 ```vertex_commodity_code_type,vertex_commodity_code_value,tax_type,is_digital_live,origins,origins_ctry_name,sale_start_at,sale_end_at,sale_reserv_history```|
+|2024-10-07|데이터분석팀 이현지|외부 판매되는 상품정보(sale 등록X) 및 스피어 대비 pk변경 ```sale_stock_id -> sale_stock_id, stock_id, goods_id, goods_option_id``` [위키](https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/4065690124/2409+ws_goods_stock+key)|
 
 
 ###### Source Tables
@@ -134,7 +135,7 @@ DEBUG = False
 def send_message_to_slack(target):
 
     if target == 'sale_stock_id_unique':
-        message = ""we_mart.ws_goods_stock.sale_stock_id 중복 인입 있습니다.""
+        message = ""🚨 we_mart.ws_goods_stock PK 중복 인입 있습니다.""
 
     slack_message = f""""""*{key} {message} *""""""
     slack_token = dbutils.secrets.get(scope=""slack"", key=""token"")
@@ -193,14 +194,14 @@ for name in table_list:
 9,md,,just_heading,#### MAIN QUERY
 10,py,,code,"df_q = f'''
 select * except(seq) from (
-select *, row_number() over(partition by part_date, sale_stock_id order by sale_upd_dt desc) as seq
+select *, row_number() over(partition by part_date, sale_stock_id, stock_id, goods_id, goods_option_id order by goods_opt_cre_dt desc) as seq
 from (
 
     select distinct
 -- ID
     GDS.goods_id                                                                                                      as goods_id
     , SLE.sale_id                                                                                                     as sale_id
-    , GDT.stock_id                                                                                                    as stock_id
+    , STK.stock_id                                                                                                    as stock_id
     , SLT.sale_stock_id                                                                                               as sale_stock_id
     , GGC.goods_upr_cat_id                                                                                            as goods_upr_cat_id
     , GGC.goods_lwr_cat_id                                                                                            as goods_lwr_cat_id
@@ -226,7 +227,7 @@ from (
 -- POD
     , GDO.pod_option_sell_code                                                                                        as pod_option_sell_code
     , GDS.pod_template_code                                                                                           as pod_template_code
-    , GDO.pod_resource_id                                                                                             as pod_resource_id
+    , ''                                                                                                              as pod_resource_id
     , GOG.pod_product_code                                                                                            as pod_product_code
     , GDS.pod_product_type                                                                                            as pod_product_type
 -- FINANCE
@@ -366,15 +367,20 @@ from (
     , SLE.created_at                                                                                                  as sale_cre_dt
     , SLE.updated_at                                                                                                  as sale_upd_dt
     , SLT.updated_at                                                                                                  as sale_stock_upd_dt
+    , GDO.created_at                                                                                                  as goods_opt_cre_dt
+    , GDO.updated_at                                                                                                  as goods_opt_upd_dt
     , timestamp(current_timestamp() + interval '9' hour)                                                              as run_timestamp
     , '{key_date}'                                                                                                    as part_date
     , '{key}'                                                                                                         as part_hour
 
-    from goods as GDS
-    left join goods_stock as GDT on GDS.goods_id = GDT.goods_id
-    left join stock as STK on GDT.stock_id = STK.stock_id
-    left join goods_option as GDO on STK.goods_option_id = GDO.goods_option_id
+    from goods_option as GDO
     left join goods_option_group as GOG on GDO.goods_option_group_id = GOG.goods_option_group_id
+    left join stock as STK on GDO.goods_option_id = STK.goods_option_id
+    left join goods_stock as GDT on STK.stock_id = GDT.stock_id
+    left join goods as GDS on GDT.goods_id = GDS.goods_id
+    left join sale as SLE on GDS.goods_id = SLE.goods_id
+    left join sale_stock as SLT on SLE.sale_id = SLT.sale_id and GDO.goods_option_id = SLT.goods_option_id
+
 -- ORIGINS
     left join 
     (
@@ -390,8 +396,6 @@ from (
         )
         group by 1
     ) as ORI on GDO.goods_option_group_id = ORI.goods_option_group_id
-    left join sale as SLE on GDS.goods_id = SLE.goods_id
-    left join sale_stock as SLT on SLE.sale_id = SLT.sale_id and GDO.goods_option_id = SLT.goods_option_id
 -- FIXED PRICE SOURCE
     left join 
     (
@@ -568,8 +572,8 @@ where seq = 1
 df = fin_df(df_q, mode)"
 11,md,,just_heading,#### RUN
 12,py,,code,"# 중복 값 확인
-check = df.groupBy('sale_stock_id').count()
-check_cnt = check.where('count > 1 and sale_stock_id is not null').count()
+check = df.groupBy('sale_stock_id','stock_id','goods_id','goods_option_id').count()
+check_cnt = check.where('count > 1 and sale_stock_id || stock_id || goods_id || goods_option_id is not null').count()
 
 # RUN MAIN QUERY
 if check_cnt > 1:

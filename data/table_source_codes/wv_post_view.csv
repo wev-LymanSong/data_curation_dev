@@ -1,0 +1,229 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.wv_post_view
+2,md,,basic_info,"#### Basic Info
+* 포스트 조회 마트
+* MART PRIMARY
+* DAILY APPEND
+* WIKI:[https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/3532783929/we+mart.wv+post+view]
+
+###### history
+|date|contributor|comments|
+|----|----|----|
+|2024-05-31 |윤상혁|커뮤니티 가입자 유무 추가, 조회유저 국가 기준 변경|
+|2024-01-05 |윤상혁|IMAGE,YOUTUBE 타입 재생수 0으로 일괄 변경|
+|2023-09-12 |윤상혁|we_art_id 누락 수정|
+|2023-07-26 |윤상혁|LIVE 집계를 위해 2일 데이터 적재로 변경|
+|2023-07-21 |윤상혁|media_type 'LIVE' 집계 로직 수정|
+|2023-06-23 |윤상혁|post_type 정비|
+|2023-05-22 |데이터분석팀 윤상혁| 마트생성|
+
+###### Source Tables
+* wev_prod.weverse2.community_content_post
+* wev_prod.we_mart.wv_comm_user
+* wev_prod.weverse2.community_member_special_member
+* wev_prod.we_mart.wv_media 
+* wev_prod.we_mart.wv_server_log_base
+* wev_prod.we_mart.we_artist"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"")
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'wv_post_view', 
+  'service' : 'weverse',
+  'partition' : ['part_art_id', 'part_date']
+}
+
+option = {
+      'date' : key, 
+      'format':'delta', #default (delta)
+      'mode': 'append', #default (append)
+      'period': 'daily', #default (daily)
+      'noti' : True #default (True) 
+}
+
+spark.sql(""set time zone 'Asia/Seoul'"")"
+6,py,,code,"# live list key_date
+
+keydates = spark.sql(f'''
+select distinct min(date(start_dt)) as key1, max(date(start_dt)) as key2
+from we_mart.wv_live
+where (date(start_dt) = '{key}' or date(end_dt) = '{key}')
+and is_from_vlive = 0
+and status <> 'CANCELED'
+''')
+
+key1 = key if keydates.first()['key1'] is None else keydates.first()['key1'].strftime('%Y-%m-%d')
+key2 = key if keydates.first()['key2'] is None else keydates.first()['key2'].strftime('%Y-%m-%d')"
+7,md,,just_heading,#### MAIN QUERY
+8,py,,code,"q = f""""""
+select date(date_id) as key_date 
+      , cast(a.hour as int) as hour
+      , e.we_art_id
+      , e.we_art_name
+      , a.wv_user_id
+      , c.we_member_id
+      , nvl2(c.we_member_id, 1, 0) as is_comm_user
+      , c.is_fc
+      , a.ip_ctry
+      , a.post_id
+      , a.view_cnt
+      , case when a.media_type in ('IMAGE', 'YOUTUBE') then 0 else a.play_cnt end as play_cnt
+      , b.user_id as auther_user_id
+      , b.section_type
+      , case when b.section_type = 'OFFICIAL' then 'OFFICIAL'
+          when get_json_object(b.data, '$.hideFromArtist') = 'true' then 'HIDE_FROM_ARTIST'
+          when b.section_type = 'FEED' then 'NORMAL'
+          when b.section_type = 'ARTIST' then 'NORMAL'
+          else b.section_type
+        end as post_type
+      , case when get_json_object(b.data, '$.membershipOnly') = 'true' then 1 else 0 end as is_fc_post
+      , b.lang
+      , case when b.section_type in ('MOMENT','ARTIST') then 1 else 0 end as is_art_post
+      , coalesce(get_json_object(d.data, '$.officialName.values.ko'), get_json_object(d.data, '$.officialName.values.en'), get_json_object(d.data, '$.officialName.values.jp')) as art_indi_name
+      , a.media_type
+      , a.is_photo
+      , a.is_pitem
+      , a.media_cat_ids
+      , a.media_name
+      , a.media_rel_dt
+      , a.media_dur
+      , a.cnt_photo
+      , e.we_art_id as part_art_id
+      , date_id as part_date
+      , now() as run_timestamp
+from 
+(
+    select a.wv_user_id
+         , a.post_id
+         , a.date_id
+         , a.hour
+         , a.ip_ctry
+         , case when a.is_live = 1 then a.live_type else e.media_type end as media_type
+         , e.is_photo
+         , e.is_pitem
+         , e.media_cat_ids
+         , e.media_name
+         , e.media_rel_dt
+         , e.media_dur
+         , e.cnt_photo
+         , sum(a.play_cnt) as play_cnt
+         , sum(a.view_cnt) as view_cnt
+    from
+    (
+      select  a.date_id
+            , a.hour
+            , a.user_info_id as wv_user_id
+            , a.post_id
+            , a.media_type
+            , a.is_live
+            , a.live_type
+            , a.gcc as ip_ctry
+            , sum(is_join_url) as play_cnt
+            , sum(is_view_url) as view_cnt
+        from 
+        (
+          select a.*
+              , case when a.url = '/video/v1.0/join' then 1 else 0 end as is_join_url
+              , case when a.url rlike r'(\/post\/(.*)\/post-\d+-\d+\/read)' then 1 else 0 end as is_view_url
+              , nvl2(b.post_id, 1, 0) as is_live
+              , case when a.media_type = 'LIVE' then 'LIVE'
+                      when b.post_id is not null and (a.log_dt + interval 9 hour) >= b.start_dt and (a.log_dt + interval 9 hour) < b.end_dt then 'LIVE'
+                      when b.post_id is not null and b.end_dt is not null then 'VOD'
+                      else string(null) end as live_type
+          from wev_prod.we_mart.wv_server_log_base a 
+          left join wev_prod.we_mart.wv_live b on b.post_id = a.post_id
+          where date(a.date_id) between date('{key1}') and date('{key2}')
+            and a.post_id is not null
+            and (a.url = '/video/v1.0/join' or a.url rlike r'(\/post\/(.*)\/post-\d+-\d+\/read)')
+        ) a
+        group by 1,2,3,4,5,6,7,8
+    ) a
+    LEFT JOIN 
+    (
+          select distinct
+            post_id
+          , is_fc_only
+          , is_photo
+          , media_dur
+          , is_pitem
+          , media_cat_ids
+          , media_rel_dt
+          , cnt_photo
+          , comm_id
+          , we_art_id
+          , we_art_name
+          , media_type
+          , media_name
+          , section_type
+          from wev_prod.we_mart.wv_media 
+          where part_date = '{key}'
+    ) as e ON a.post_id = e.post_id 
+    group by 1,2,3,4,5,6,7,8,9,10,11,12,13
+) a
+inner join wev_prod.weverse2.community_content_post b on replace(b.post_id,'post-','') = a.post_id 
+left join wev_prod.we_mart.wv_comm_user c on c.wv_user_id = a.wv_user_id and c.comm_id = b.comm_id and c.part_date = '{key}'
+left join wev_prod.weverse2.community_member_special_member d on d.user_id = b.user_id and d.community_id = b.comm_id and d.special_member_type = 'ARTIST'
+left join wev_prod.we_mart.we_artist e on e.comm_id = b.comm_id
+"""""""
+9,md,,just_heading,#### RUN
+10,py,,code,"# RUN MAIN QUERY
+dflow = Dataflow(run_mode=run_mode, notifier=noti)
+dflow.run(dataframe=spark.sql(q), table_info=table, option=option, buckets=['databricks'])
+print(option)"
+11,py,,code,"spark.sql(f'''
+OPTIMIZE wev_prod.we_mart.wv_post_view
+where part_date = '{key}'
+ZORDER BY (post_id, we_art_id, we_member_id)
+''')"
+12,md,,just_heading,#### Appendix
+13,md ,,etc, ##### create table
+14,py,,code,"""""""
+%sql 
+create or replace table wev_prod.we_mart.wv_post_view
+( 
+  key_date  date comment ""기준일자""
+, hour int comment ""기준시각""
+, we_art_id  int comment ""아티스트ID""
+, we_art_name  string comment ""아티스트명""
+, wv_user_id  string comment ""weverse user_id""
+, we_member_id  bigint comment ""account_id""
+, is_comm_user int comment ""커뮤니티 가입자 유무""
+, is_fc  int comment ""멤버십 여부""
+, ip_ctry  string comment ""접속 국가""
+, post_id  string comment ""조회한 post_id""
+, view_cnt  bigint comment ""조회수""
+, play_cnt  bigint comment ""영상 재생수""
+, auther_user_id  bigint comment ""post 작성자 wv_user_id""
+, section_type  string comment ""포스트 위치""
+, post_type  string comment ""포스트 종류""
+, is_fc_post  int comment ""fc only 포스트 유무""
+, lang  string comment ""포스트 작성 언어""
+, is_art_post  int comment ""아티스트 포스트 유무""
+, art_indi_name  string comment ""작성 아티스트명""
+, media_type  string comment ""미디어 종류""
+, is_photo  int comment ""포토 포스트 유무""
+, is_pitem  int comment ""유료 미디어 유무""
+, media_cat_ids  array<int> comment ""미디어 카테고리 id""
+, media_name  string comment ""미디어 제목""
+, media_rel_dt  timestamp comment ""미디어 릴리즈 일시""
+, media_dur  int comment ""미디어 총 재생시간""
+, cnt_photo  int comment ""미디어 포함 포토수""
+, part_art_id int comment ""partition key""
+, part_date  string comment ""partition key""
+, run_timestamp  timestamp comment ""적재 시간""
+)
+partitioned by(part_art_id, part_date)
+comment '일간 포스트 조회'
+""""""
+"

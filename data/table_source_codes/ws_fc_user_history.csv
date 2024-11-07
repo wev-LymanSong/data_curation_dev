@@ -1,0 +1,427 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_mart.ws_fc_user_history
+2,md,,basic_info,"#### Basic Info
+* 일별 FC멤버십 가입자 정보
+* Mart Primary 
+* DAILY APPEND
+* WIKI : [https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/2847114134/we+mart.ws+fc+user+history] 
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2024-08-02|데이터분석팀 윤상혁|CS로 인한 멤버십 복구 시점 추가|
+|2024-07-18|데이터분석팀 윤상혁|ws_fc_user_by_ord 사용 로직 제거|
+|2024-03-20|데이터분석팀 윤상혁|멤버십 국가샵 중복가입 대응|
+|2023-09-25 |윤상혁|SMEJ 이관 유저 가입일자 이관 시점으로 변경|
+|2023-09-22 |윤상혁|order 테이블 ODS 없는 경우 대응|
+|2023-09-13 |윤상혁|SMEJ 멤버십 이관 대응|
+|2023-06-16 |윤상혁|성별,인증전화번호 데이터 만료 시 삭제되는 문제 방어 로직 추가 / 만료종류 구분 로직 최신화|
+|2023-05-24 |윤상혁|만료시간 지연 건 방어 로직 추가|
+|2022-10-17 |윤상혁|membership_number 추가|
+|2022-10-04 |윤상혁|국가마트 변경|
+|2022-08-30 |윤상혁|일자별 정상회원만 집계하는로직으로 변경|
+|2022-08-24 |윤상혁|프로미스9 JP 멤버십 방어로직|
+|2022-08-19 |윤상혁|멤버십 DB 변경 대응|
+|2021-11-29 |윤상혁|마트생성/배치생성|
+
+###### Source Tables
+* we_mart.ods_fc_member
+* membership.member_history
+* we_mart.ods_ws_order_item
+* we_mart.ods_ws_order_sheet
+* we_mart.ods_ws_user
+* we_mart.ods_ws_goods_option
+* we_mart.ods_fc_member_membership_history
+* membership.member_privacy_history
+* we_mart.ods_fc_member_confirm_purchase_history 
+* membership.membership
+* we_mart.ws_user_ctry_history
+* we_mart.we_artist
+* membership.artist_shop_version
+* membership.artist
+* membership.membership_version 
+* membership.membership_shop
+* membership.membership_type"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"")
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'ws_fc_user_history', 
+  'service' : None, #default (None)
+  'partition' : ['part_art_id', 'part_date']
+}
+option = {
+  'date' : key,
+  'format':'delta', #default (delta)
+  'mode':'append', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+}"
+6,md,,description,####Main Query
+7,md,,description,#####유저의 모든 멤버십 가입 히스토리
+8,py,,code,"q1 = f""""""
+select distinct account_id, membership_id, artist_code, order_sheet_number, membership_number
+       , started_at + interval 9 hour as started_at
+       , ended_at + interval 9 hour as ended_at
+       , created_at + interval 9 hour as created_at
+       , expire_at + interval 9 hour as expire_at
+       , min(first_create_dt + interval 9 hour)over(partition by account_id, artist_code) as first_create_dt
+       , membership_status
+       , min(first_create_dt + interval 9 hour)over(partition by membership_number) as shop_first_create_dt
+from 
+(
+       -- member 테이블은 현재 상태 정보만 확인할 수 있다.
+       -- 과거 구매 건은 member_history 테이블로 확인
+       select '1' as type, account_id, membership_id, artist_code, order_sheet_number, membership_number, started_at, ended_at
+              -- SMEJ 이관 유저는 이관 시점을 멤버십 가입일자로 변경
+              -- 멤버십 중복구매 허용으로 기존 갈아타기 유저를 복구한 경우에도 복구 시점을 가입일자로 변경
+              , case when order_sheet_number = 1 and created_at < '2023-09-12' then timestamp('2023-09-12 00:00:00')
+                     when order_sheet_number = 1 then created_at
+                     else payment_completed_at end as created_at
+              , 0 as member_history_id
+              -- membership 상태가 deactivated 인데, 만료 예정일(ended_at) 이 updated_at 보다 미래면 만료 시점은 updated_at으로 추정.
+              -- 만료되지 않은 멤버십의 만료 일자는 ended_at으로 일괄 적용
+              , case when deactivated_at is not null then deactivated_at
+                     when status  = 'DEACTIVATED' and ended_at > updated_at then updated_at 
+                     else ended_at end as expire_at
+              , status as membership_status
+              -- 멤버십 첫 구매일자 (유지되는 값)
+              -- SMEJ 이관 유저 중 9/12일 이전 이관된 경우는 9/12일로 고정시킴
+              , case when order_sheet_number = 1 and created_at < '2023-09-12' then timestamp('2023-09-12 00:00:00')
+                     else created_at end as first_create_dt
+       from we_mart.ods_fc_member
+       where part_date = '{key}'
+              and order_sheet_number <> -1
+       union all 
+       select '2' as type, account_id, membership_id, artist_code, order_sheet_number, membership_number, started_at, ended_at
+              -- SMEJ 이관 유저는 이관 시점을 멤버십 가입일자로 변경
+              -- 멤버십 중복구매 허용으로 기존 갈아타기 유저를 복구한 경우에도 복구 시점을 가입일자로 변경
+              , case when order_sheet_number = 1 and created_at + interval 9 hour < '2023-09-12' then timestamp('2023-09-12 00:00:00')
+                     when order_sheet_number = 1 then created_at
+                     else payment_completed_at end as created_at
+              , member_history_id
+              , case when deactivated_at is not null then deactivated_at -- [유효기간 만료] > 만료 데이터 생성
+              -- [갱신/갈아타기] > 만료일자가 안찍힘 > 직후 가입한 멤버십 생성시각이 직전 멤버십의 만료시각으로 추정.
+                     when lead(payment_completed_at)over(partition by membership_number order by created_at) < ended_at then lead(payment_completed_at)over(partition by membership_number order by created_at)
+                     else ended_at end as expire_at
+              -- member_history 테이블에만 있는 데이터는 모두 DEACTIVATED로 적용, 현재 ACTIVE한 경우라면 member 테이블에 있음.
+              , 'DEACTIVATED' as membership_status 
+              , timestamp(null) as first_create_dt
+       from membership.member_history 
+       where order_sheet_number <> -1 
+       and created_at + interval 24 month >= '{key}' -- 집계 속도 향상을 위해 과거 2년전 데이터만 집계 대상으로 포함
+       and date(created_at + interval 9 hour) <= '{key}'
+)
+qualify row_number() over (partition by membership_number, order_sheet_number order by type, member_history_id desc) = 1 -- 각 구매 건의 가장 마지막 상태만을 가져온다. 동일 주문건의 상태 변화는 남기지 않는다.
+""""""
+spark.sql(q1).createOrReplaceTempView('fc_history')"
+9,md,,description,#####구매 정보 JOIN
+10,py,,code,"q2 = f""""""
+select distinct 
+       a.account_id, a.membership_id, a.artist_code, a.order_sheet_number, a.membership_number
+     , b.order_sheet_id, c.sale_id
+     , a.started_at, a.ended_at, a.created_at
+     -- 구매 취소 또는 멤버십 만료로 발생한 실제 만료시간을 기준으로 함
+     , a.expire_at as expired_at
+     , e.no_refunded_at
+     , a.membership_status
+     -- SMEJ 이관 유저는 구매 상태를 임의로 'TRANSFERRED'으로 할당
+     , case when a.order_sheet_number = 1 then 'TRANSFERRED' else c.status end as order_status
+     -- 갱신 시 추가로 받은 일자 계산
+     , case when f.remaining_days between 1 and 60 then f.remaining_days else 0 end as additional_days
+     -- 개편(2021-08) 이전은 구매타입이 없음
+     , case when f.fst_type is null then 'NEW' 
+            when a.order_sheet_number = 1 then string(null)
+            else f.fst_type end as purchase_type 
+     , f.last_pur_type
+     , a.first_create_dt
+     , a.shop_first_create_dt
+     , min(a.first_create_dt)over(partition by a.account_id) as tot_first_create_dt
+from fc_history a
+left join wev_prod.we_mart.ods_ws_order_sheet b on b.order_sheet_number = a.order_sheet_number and b.part_date = '{key}'
+left join wev_prod.we_mart.ods_ws_order_item c on c.order_sheet_id = b.order_sheet_id and c.sale_id not in (154,295,352,353,673,674,675,676,806,807) and c.part_date = '{key}'
+left join 
+(
+    -- 구매 완료 시점 확인 (구매 완료 후 환불이 발생 & 동일 fc_id로 재가입 시 no_refunded_at보다 create_dt가 더 늦을 수 있음)
+    select account_id
+        , membership_id
+        , min(created_at) + interval 9 hour as no_refunded_at
+    from  wev_prod.we_mart.ods_fc_member_confirm_purchase_history 
+    where part_date = '{key}'
+    group by 1,2
+) e on e.account_id = a.account_id and e.membership_id = a.membership_id
+left join 
+(
+  -- 가입/만료 종류 구분
+  select distinct 
+        membership_number
+      , order_sheet_number
+      , max(case when type not rlike '_EXPIRED' and type not rlike '_DEACTIVATED' then remaining_days end)over(partition by membership_number, order_sheet_number) as remaining_days
+      , first(type)over(partition by membership_number, order_sheet_number order by created_at) as fst_type
+      , first(type)over(partition by membership_number, order_sheet_number order by created_at desc) as last_pur_type
+  from wev_prod.we_mart.ods_fc_member_membership_history
+  where part_date = '{key}'
+) f on f.order_sheet_number = a.order_sheet_number and f.membership_number = a.membership_number
+""""""
+spark.sql(q2).createOrReplaceTempView('fc_history_order')"
+11,md,,description,#####수기 복구 건 구분 및 멤버십 만료일자 정제
+12,py,,code,"q3 = """"""
+with RESTORE as 
+(
+    select membership_number, order_sheet_number, lag_ord_sheet_num, created_at + interval 9 hour as restore_dt
+    from
+    (
+      select *
+          , lag(order_sheet_number)over(partition by membership_number order by created_at) as lag_ord_sheet_num
+      from wev_prod.membership.member_history 
+    )
+    where order_sheet_number < lag_ord_sheet_num -- 히스토리 순서 상 과거 주문번호로 원복한 상황 = 멤버십 복구
+)
+select account_id, membership_id, artist_code, BASE.order_sheet_number, BASE.membership_number
+      , order_sheet_id, sale_id
+      , started_at, no_refunded_at, ended_at, created_at
+      , nvl2(expired_at2, expired_at2, expired_at) as expired_at
+      , expired_at as raw_expired_at -- 검증용
+      , membership_status, order_status
+      , additional_days, purchase_type, last_pur_type
+      , next_created_at, prev_created_at
+      , nvl2(RESTORE.order_sheet_number,1,0) as is_restore_item
+      , nvl2(RESTORE2.lag_ord_sheet_num,1,0) as is_cx_by_restore
+      , coalesce(RESTORE.restore_dt, RESTORE2.restore_dt) as restore_dt
+      , first_create_dt, shop_first_create_dt, tot_first_create_dt
+      
+from
+(
+  select *
+      , case when next_created_at is null then expired_at -- 다음 멤버십이 없음 = 정상
+              -- 다음 멤버십 가입시각이 현재 멤버십 만료 시각보다 미래 = 정상
+              when next_created_at >= expired_at then expired_at 
+              -- 다음 멤버십 가입시각이 현재 멤버십 만료 시각보다 과거 = 비정상
+              when expired_at > next_created_at and order_status not in ('ORDER_CREATED', 'REFUND_COMPLETED', 'REFUND_RESOLVED', 'PAYMENT_CANCELED', 'PAYMENT_FAILED', 'DIGITAL_TICKET_EXPIRED') then expired_at -- 현재 멤버십이 구매 취소(복구한 멤버십) or 만료가 아니라면 현재가 유효한 멤버십
+              -- 복구 후 구매취소한 케이스는 확인된 것이 없고, 멤버십 정책 상 구매 후 7일이 경과하면 환불 불가임.
+              when expired_at > next_created_at and order_status in ('ORDER_CREATED', 'REFUND_COMPLETED', 'REFUND_RESOLVED', 'PAYMENT_CANCELED', 'PAYMENT_FAILED', 'DIGITAL_TICKET_EXPIRED') then next_created_at -- 현재 멤버십이 구매 취소 or 만료라면 현재는 유효하지 않은 멤버십이고, 만료 시각 지연 또는 오류로 만료 시각을 다음 멤버십 가입 시각으로 강제 변경
+              end expired_at2
+  from
+  (
+    select *
+          , lead(created_at) over (partition by membership_number order by order_sheet_number) as next_created_at
+          , lag(created_at) over (partition by membership_number order by order_sheet_number) as prev_created_at
+    from fc_history_order
+  )
+) as BASE
+left join RESTORE on RESTORE.order_sheet_number = BASE.order_sheet_number and RESTORE.membership_number = BASE.membership_number
+left join RESTORE as RESTORE2 on RESTORE2.lag_ord_sheet_num = BASE.order_sheet_number and RESTORE2.membership_number = BASE.membership_number
+""""""
+spark.sql(q3).createOrReplaceTempView('fc_history_restore')"
+13,md,,description,#####유저정보 JOIN & 탈퇴 유형 분류
+14,py,,code,"q5 = f""""""
+select distinct a.*, c.first_ip_country, c.country as purchase_ip_country_code
+from
+(
+  -- 만료 종류 구분
+  select a.*
+      , b.user_id
+      , b.status as user_status
+      , case when a.membership_status = 'DEACTIVATED' and a.last_pur_type in ('ADMINISTRATOR_MANUAL_DEACTIVATED', 'REFUND_EXPIRED') then '구매 취소'
+             when a.membership_status = 'DEACTIVATED' and a.last_pur_type = 'SERVICE_DEACTIVATED' then '위버스 어카운트 탈퇴'
+             when a.membership_status = 'DEACTIVATED' and a.last_pur_type = 'SERVICE_EXPIRED' then '유효기간 만료(갱신가능)'
+             when a.membership_status = 'DEACTIVATED' and lead(a.purchase_type)over(partition by a.membership_number order by a.created_at) = 'RENEW' then '갱신으로 인한 만료'
+             when a.membership_status = 'DEACTIVATED' and lead(a.purchase_type)over(partition by a.membership_number order by a.created_at) = 'CHANGE' then '갈아타기로 인한 만료'
+             end as withdraw_status
+  from fc_history_restore a 
+  left join 
+  (
+    select we_member_id as account_id
+         , user_id
+         , status
+    from wev_prod.we_mart.ods_ws_user 
+    where part_date = '{key}'
+    qualify row_number()over(partition by we_member_id order by user_id desc) = 1
+  ) b on b.account_id = a.account_id 
+  where date(a.created_at) <= date('{key}') and date('{key}') <= date(a.expired_at)
+) a 
+left join 
+(
+  select distinct 
+         user_id
+       , country
+       , ip
+       , created_at + interval 9 hour as date_id
+       , first(country)over(partition by user_id order by created_at) as first_ip_country
+       , nvl(lead(created_at + interval 9 hour) over (partition by user_id, member_id order by created_at), '2099-12-31 23:59:59') as next_date_id 
+    from wev_prod.we_mart.ws_user_ctry_history
+    where part_date <= '{key}'
+    qualify row_number() over(partition by user_id order by created_at desc) = 1 -- 중복 데이터 방지
+) c
+on c.user_id = a.user_id and date(c.date_id) <= date(a.started_at) and date(a.started_at) < date(c.next_date_id)
+""""""
+spark.sql(q5).createOrReplaceTempView('mem_user_base')"
+15,md,,just_heading,##### 멤버십 상품 정보 JOIN & 컬럼명 정리
+16,py,,code,"q6 = f""""""
+select a.account_id as we_member_id, a.user_id, a.user_status, string(null) as birth_date, b.gender as sex, first_ip_country as first_ip_ctry
+    , d.we_art_id, d.we_art_name, d.comm_id, d.ws_art_id, d.ws_label_id
+    , c.shop_code as shop, a.membership_id as fc_id
+    , c.membership_name as fc_name
+    , cast(replace(c.version_code, 'V', '') as int) as fc_ver
+    , c.type_code as fc_type
+    , a.membership_number as fc_num
+    , a.created_at as create_dt, a.no_refunded_at as no_refund_dt, a.expired_at as expire_dt, a.started_at as start_dt, a.ended_at as end_dt
+    , a.purchase_ip_country_code as ord_ip_ctry
+    , e.ctry_calling_code as auth_call_code, e.auth_ctry_code, e.auth_ctry_name
+    , a.sale_id, a.order_sheet_id as ord_sheet_id, a.order_sheet_number as ord_sheet_num
+    , a.purchase_type as pur_type, a.membership_status as fc_status, a.order_status as ord_status, a.withdraw_status
+    , cast(case when f.last_ord_sheet_num != a.order_sheet_number then f.purchase_seq + 1 else f.purchase_seq end as int) as pur_seq
+    , a.additional_days as extra_day
+    , a.is_restore_item, a.is_cx_by_restore, a.restore_dt
+    , a.first_create_dt, a.shop_first_create_dt, a.tot_first_create_dt
+    , a.raw_expired_at
+    , now() + interval 9 hour as run_timestamp, '{key}' as part_date, d.ws_art_id as part_art_id
+from mem_user_base a 
+left join 
+(
+    select membership_number
+         , created_at + interval 9 hour as created_at
+         , country_calling_code
+         , gender
+         , nvl(lead(created_at)over(partition by membership_number order by created_at), '2999-12-31') + interval 9 hour as next_created_at
+    from wev_prod.membership.member_privacy_history
+) b on b.membership_number = a.membership_number and date(b.created_at) <= date('{key}') and date('{key}') < date(b.next_created_at)
+left join 
+(
+    SELECT a.membership_id
+         , c.artist_code
+         , c.artist_name
+         , e.shop_code
+         , a.membership_name
+         , d.version_code 
+         , f.type_code
+         , a.use_type
+         , a.season_started_at
+         , a.season_ended_at
+         , a.subscription_period 
+         , c.deep_link 
+         , c.push_deep_link
+         , a.created_at 
+         , a.updated_at 
+    FROM wev_prod.membership.membership a
+    LEFT JOIN wev_prod.membership.artist_shop_version b ON b.artist_shop_version_id = a.artist_shop_version_id
+    LEFT JOIN wev_prod.membership.artist c ON c.artist_id  = b.artist_id 
+    LEFT JOIN wev_prod.membership.membership_version d ON d.membership_version_id  = b.membership_version_id
+    LEFT JOIN wev_prod.membership.membership_shop e ON e.membership_shop_id = b.membership_shop_id 
+    LEFT JOIN wev_prod.membership.membership_type f on f.membership_type_id = a.membership_type_id
+) c on c.membership_id = a.membership_id
+left join wev_prod.we_mart.we_artist d on d.fc_artist_code = a.artist_code 
+left join 
+(
+    select cast(ctry_calling_code as int) as ctry_calling_code
+         , sort_array(collect_set(ctry_name)) as auth_ctry_name
+         , sort_array(collect_set(ctry_code)) as auth_ctry_code
+    from wev_prod.we_meta.we_country
+    group by 1
+) e on e.ctry_calling_code = b.country_calling_code
+left join 
+(
+    select distinct 
+        membership_number as fc_num
+        , count(1)over(partition by membership_number) as purchase_seq
+        , first(order_sheet_number)over(partition by membership_number order by order_sheet_number desc) as last_ord_sheet_num
+    from 
+    (
+        select distinct membership_number, order_sheet_number
+        from wev_prod.membership.member_history
+    )
+) f on f.fc_num = a.membership_number
+""""""
+df = spark.sql(q6)"
+17,md,,just_heading,##### 만료로 인해 성/전화번호 데이터 미수집 시 전일자 파티션 값으로 복원
+18,py,,code,"df2 = spark.sql(f""""""select * from wev_prod.we_mart.ws_fc_user_history where part_date = date_sub('{key}', 1)"""""")"
+19,py,,code,"from pyspark.sql.functions import when, col
+#컬러명 Dup으로 인해 2단계로 나눠서 진행
+df3 = df.alias('df').join(df2.alias('df2'), (df.ord_sheet_num == df2.ord_sheet_num) & (df.fc_num == df2.fc_num), ""left"")\
+  .withColumn(""new_gender"", when(df.sex.isNull(), df2.sex).when(df.sex == 'UNKNOWN', df2.sex).otherwise(df.sex))\
+  .withColumn(""new_call_code"", when(df.auth_call_code.isNull(), df2.auth_call_code).otherwise(df.auth_call_code))\
+  .withColumn(""new_ctry_code"", when(df.auth_ctry_code.isNull(), df2.auth_ctry_code).otherwise(df.auth_ctry_code))\
+  .withColumn(""new_ctry_name"", when(df.auth_ctry_name.isNull(), df2.auth_ctry_name).otherwise(df.auth_ctry_name))\
+  .select(""df.*"", ""new_gender"", ""new_call_code"", ""new_ctry_code"", ""new_ctry_name"")
+
+df4 = df3.withColumn(""sex"", when(col(""sex"").isNull(), col(""new_gender"")).when(col(""sex"") == 'UNKNOWN', col(""new_gender"")).otherwise(col(""sex"")))\
+  .withColumn(""auth_call_code"", when(col(""auth_call_code"").isNull(), col(""new_call_code"")).otherwise(col(""auth_call_code"")))\
+  .withColumn(""auth_ctry_code"", when(col(""auth_ctry_code"").isNull(), col(""new_ctry_code"")).otherwise(col(""auth_ctry_code"")))\
+  .withColumn(""auth_ctry_name"", when(col(""auth_ctry_name"").isNull(), col(""new_ctry_name"")).otherwise(col(""auth_ctry_name"")))\
+  .select( ""we_member_id""        ,""user_id""             ,""user_status""         ,""birth_date""          ,""sex""\
+          ,""first_ip_ctry""       ,""we_art_id""           ,""we_art_name""         ,""comm_id""             ,""ws_art_id""\
+          ,""ws_label_id""         ,""shop""                ,""fc_id""               ,""fc_name""             ,""fc_ver""\
+          ,""fc_type""             ,""fc_num""              ,""create_dt""           ,""no_refund_dt""        ,""expire_dt""\
+          ,""start_dt""            ,""end_dt""              ,""ord_ip_ctry""         ,""auth_call_code""      ,""auth_ctry_code""\
+          ,""auth_ctry_name""      ,""sale_id""             ,""ord_sheet_id""        ,""ord_sheet_num""       ,""pur_type""\
+          ,""fc_status""           ,""ord_status""          ,""withdraw_status""     ,""pur_seq""             ,""extra_day""\
+          ,""is_restore_item""     ,""is_cx_by_restore""    ,""restore_dt"",          ""first_create_dt""		  ,""shop_first_create_dt"" \
+          , ""tot_first_create_dt"",""raw_expired_at""      ,""run_timestamp""	      ,""part_date""			     ,""part_art_id"")"
+20,md,,just_heading,#### Run
+21,py,,code,"# run 
+b = Dataflow(run_mode=run_mode, notifier=noti)
+b.run(dataframe=df4, table_info=table, option=option, buckets=['databricks'])"
+22,md,,just_heading,#### Appendix
+23,md,,just_heading,##### create table
+24,py,,code,"q = """"""
+create or replace table we_mart.ws_fc_user_history (
+  we_member_id                   bigint           comment ""we_member_id""  
+, user_id                        bigint           comment ""위버스샵 회원 id""
+, user_status                    string           comment ""위버스샵 계정 상태""
+, birth_date                     string           comment ""생년월일""
+, sex                            string           comment ""성별""
+, first_ip_ctry                  string           comment ""최초 접속 국가""
+, we_art_id                         int           comment ""we_art_id""
+, we_art_name                       string           comment ""we_art_name""
+, comm_id                         bigint           comment ""위버스 커뮤니티 id""
+, ws_art_id                         bigint           comment ""위버스샵 아티스트 id""
+, ws_label_id                         bigint           comment ""위버스샵 레이블 id""
+, shop                           string           comment ""멤버십 구매 SHOP""
+, fc_id                          bigint           comment ""멤버십 id""
+, fc_name                        string           comment ""멤버십명""
+, fc_ver                         int              comment ""멤버십 버전""
+, fc_type                        string           comment ""멤버십 종류""
+, fc_num                        string           comment ""멤버십 회원번호""
+, create_dt                      timestamp        comment ""멤버십 구매 시간""
+, no_refund_dt                   timestamp        comment ""멤버십 구매확정 시간""
+, expire_dt                      timestamp        comment ""멤버십 만료 시간""
+, start_dt                       timestamp        comment ""멤버십 유효기간 시작 시간""
+, end_dt                         timestamp        comment ""멤버십 유효기간 만료예정 시간""
+, ord_ip_ctry                    string           comment ""멤버십 구매시점 ip 기준 국가""
+, auth_call_code                 int              comment ""전화번호 인증번호""
+, auth_ctry_code                 array<string>    comment ""전화번호 인증 국가코드""
+, auth_ctry_name                 array<string>    comment ""전화번호 인증 국가명""
+, sale_id                        bigint           comment ""sale_id""
+, ord_sheet_id                   bigint           comment ""order_sheet_id""
+, ord_sheet_num                  bigint           comment ""order_sheet_number 주문번호""
+, pur_type                       string           comment ""멤버십 구매 종류""
+, fc_status                      string           comment ""멤버십 가입상태""
+, ord_status                     string           comment ""멤버십 구매상태""
+, withdraw_status                string           comment ""멤버십 만료 상세 내용""
+, pur_seq                        int              comment ""멤버십 구매 횟수""
+, extra_day                      int              comment ""갱신 혜택으로 받은 추가 일자""
+, is_restore_item                int              comment ""복구된 멤버십 유무""
+, is_cx_by_restore               int              comment ""멤버십 복구로 인한 취소 유무""
+, restore_dt					 timestamp        comment ""운영으로 인해 과거 멤버십으로 복구한 시간""
+, first_create_dt				timestamp        comment ""아티스트 멤버십 첫가입일자""
+, shop_first_create_dt  timestamp          comment ""샵기준 멤버십 첫가입일자""
+, tot_first_create_dt			timestamp        comment ""멤버십 서비스 첫가입일자""
+, raw_expired_at          timestamp        comment ""검증용 만료일자(from order_item)""
+, run_timestamp					 timestamp        comment ""적재 시간""
+, part_date					     string           comment ""파티션 일자""
+, part_art_id					 bigint           comment ""파티션 아티스트 id""
+)
+partitioned by(part_art_id, part_date)
+""""""
+#spark.sql(q)
+"

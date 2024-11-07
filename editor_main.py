@@ -1,6 +1,9 @@
 import streamlit as st
 from streamlit_ace import st_ace, KEYBINDINGS, LANGUAGES, THEMES
 from specification_builder import SpecificationBuilder
+from tools.utils.md2notion_uploader import *
+from configurations import *
+from tools.connectors.notion_connector import NotionConnector
 import os
 import warnings
 warnings.filterwarnings("ignore")
@@ -20,29 +23,71 @@ if "sb" not in st.session_state:
     st.session_state.sb = init_sb()
 if 'martdown_text' not in st.session_state:
     st.session_state.martdown_text = "NULL"
+if 'notion_connector' not in st.session_state:
+    st.session_state.notion_connector = NotionConnector(notion_api_key=os.getenv("NOTION_API_KEY"))
 
 @st.dialog("Save Markdown file as")
-def save_cur_state(markdown_code, file_name):
+def save_cur_state(file_name):
     st.write(f"Current File name: {file_name}")
     if st.button("Save"):
         with open(f"./data/specs_prod/{file_name}", "w", encoding='utf-8') as f:
-            cleaned_content = '\n'.join(line.rstrip() for line in markdown_code.splitlines())
-            file = f.write(cleaned_content)
-            st.write("Saved")
+            cleaned_content = '\n'.join(line.rstrip() for line in st.session_state.default_content.splitlines())
+            _ = f.write(cleaned_content)
+            st.write("MD file saved.")
+
+        with open(f"./data/specs_queue/{file_name}", "w", encoding='utf-8') as f:
+            cleaned_content = '\n'.join(line.rstrip() for line in st.session_state.default_content.splitlines())
+            _ = f.write(cleaned_content)
+
+    ## NOTION UPLOAD
+    if st.button("Upload to Notion"):
+        with st.spinner('Uploading to Notion...'):
+            try:
+                st.session_state.notion_connector.upload_mdfile2page(
+                    target_db = db2notion_id_dict[st.session_state.sb.TARGET_DB],
+                    target_table = st.session_state.sb.TARGET_TABLE,
+                    md_file_path = f"./data/specs_prod/{file_name}"
+                )
+                st.write("Upload success")
+            except:
+                st.write("Upload faild")
+
+def delete_cur_md(file_name):
+    st.write(f"Current File name: {file_name}")
+    if st.button("Delete"):
+        print("delete")
+        try:
+            file_path = f"./data/specs_queue/{file_name}"
+            
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                st.success(f"File {file_name} deleted successfully from specs_queue folder.")
+            else:
+                st.warning(f"File {file_name} does not exist in specs_queue folder.")
+        except Exception as e:
+            st.error(f"Error deleting file: {str(e)}")
 
 def regen_all(file_name): 
-    st.session_state.sb.collect_static_data()
-    st.session_state.sb.generate_semantic_data("TABLE_NOTICE")
-    st.session_state.sb.generate_semantic_data("HOW_TO_USE")
-    st.session_state.sb.generate_semantic_data("DOWNSTREAM_TABLE_INFO")
-    st.session_state.sb.build_mdfile()
-    return True
+    with st.spinner('Reconstruct the whole file...'):
+        st.session_state.sb.collect_static_data()
+        st.session_state.sb.generate_semantic_data("TABLE_NOTICE")
+        st.session_state.sb.generate_semantic_data("HOW_TO_USE")
+        st.session_state.sb.generate_semantic_data("DOWNSTREAM_TABLE_INFO")
+        st.session_state.sb.build_mdfile()
+        with open(f"./data/specs_queue/{st.session_state.target_table}", "rb") as f:
+            file = f.read().decode('utf-8')
+        st.session_state.default_content = file
+        return True
 
 def regen_component(file_name, component_name):
-    st.session_state.sb.read_mdfile()
-    st.session_state.sb.generate_semantic_data(component_name)
-    st.session_state.sb.build_mdfile()
-    return True
+    with st.spinner(f'Regenarate {component_name}...'):
+        st.session_state.sb.read_mdfile()
+        st.session_state.sb.generate_semantic_data(component_name)
+        st.session_state.sb.build_mdfile()
+        with open(f"./data/specs_queue/{st.session_state.target_table}", "rb") as f:
+            file = f.read().decode('utf-8')
+        st.session_state.default_content = file
+        return True
 st.set_page_config(page_title="테이블 명세서 편집기", layout="wide", page_icon="💡")
 markdown_garammar = """
     | 요소 예시 | 문법                             |
@@ -81,10 +126,10 @@ with st.sidebar:
         list_type = st.selectbox("리스트 선택", ["작성 대기중", "작성 완료"])
         
         if list_type == "작성 대기중":
-            files = [f for f in os.listdir("./data/specs_queue") if f.endswith(".md")]
-            folder = "./data/specs_queue"
+            files = sorted([f for f in os.listdir("./data/specs_queue") if f.endswith(".md")])
+            folder = "./data/specs_queue" 
         else:  # "작성 완료"
-            files = [f for f in os.listdir("./data/specs_prod") if f.endswith(".md")]
+            files = sorted([f for f in os.listdir("./data/specs_prod") if f.endswith(".md")])
             folder = "./data/specs_prod"
         
         if files:
@@ -97,39 +142,52 @@ with st.sidebar:
             st.write("해당 폴더에 파일이 없습니다.")
             st.session_state.target_table = None
 
-        if st.session_state.target_table and st.session_state.target_table != st.session_state.get('previous_target_table'):
+        if st.session_state.target_table == "spec_template.md":
+            1==1
+        elif st.session_state.target_table and st.session_state.target_table != st.session_state.get('previous_target_table'):
             st.session_state.sb = SpecificationBuilder(st.session_state.target_table.split(".")[0])
             print("SpecificationBuilder reinitialized")
             st.session_state.sb.read_mdfile()
             st.session_state.previous_target_table = st.session_state.target_table
-            with open(f"./data/specs_queue/{st.session_state.target_table}", "rb") as f:
+            print(folder)
+            with open(f"{folder}/{st.session_state.target_table}", "rb") as f:
                 file = f.read().decode('utf-8')
             st.session_state.default_content = file
         else:
-            print(st.session_state.get('target_table'), st.session_state.get('previous_target_table'))
+            1==1
 
 
+        if st.session_state.target_table != "spec_template.md":
+            st.subheader(":blue[재생성 하기]", divider = 'grey')
+            if st.button("🎲 전체 파일 재생성"):
+                regen_all(st.session_state.target_table)
+            if st.button("🎲 TABLE NOTICE 재생성"):
+                regen_component(st.session_state.target_table, "TABLE_NOTICE")
+            if st.button("🎲 HOW TO USE 재생성"):
+                regen_component(st.session_state.target_table, "HOW_TO_USE")
+            if st.button("🎲 DOWNSTREAM TABLE INFO 재생성"):
+                regen_component(st.session_state.target_table, "DOWNSTREAM_TABLE_INFO")
 
-        st.subheader(":blue[재생성 하기]", divider = 'grey')
-        if st.button("🎲 전체 파일 재생성"):
-            regen_all(st.session_state.target_table)
-        if st.button("🎲 TABLE NOTICE 재생성"):
-            regen_component(st.session_state.target_table, "TABLE_NOTICE")
-        if st.button("🎲 HOW TO USE 재생성"):
-            regen_component(st.session_state.target_table, "HOW_TO_USE")
-        if st.button("🎲 DOWNSTREAM TABLE INFO 재생성"):
-            regen_component(st.session_state.target_table, "DOWNSTREAM_TABLE_INFO")
-        
-        
+        else:
+            st.warning("템플릿 파일은 수정할 수 없습니다.")
+
         on = st.toggle(label = 'See the raw code')
         if on:
             st.code(st.session_state.default_content, language="markdown")
-    
     with upload:
-        st.subheader(f":blue[현재 파일: {st.session_state.sb.TARGET_TABLE}]", divider='grey')
-        if st.button("Save Current State"):
-            save_cur_state(markdown_code=st.session_state.markdown_text, file_name = st.session_state.target_table)
-
+        if st.session_state.target_table != "spec_template.md":
+            st.subheader(f":blue[현재 파일: {st.session_state.sb.TARGET_TABLE}]", divider='grey')
+            if st.button("Save Current State as Prod"):
+                st.write("Saving current state...")
+                save_cur_state(file_name = st.session_state.target_table)
+            if st.button(label = 'Delete in the Queue'):
+                st.write("Deleting from the queue...")
+                delete_cur_md(file_name = st.session_state.target_table)
+            if st.button("Notion Upload"):
+                st.write("Uploading to Notion...")
+                notion_upload(st.session_state.target_table)
+        else:
+            st.warning("템플릿 파일은 수정할 수 없습니다.")
     with setup_section:
         st.subheader(":blue[편집기 파라미터 세팅]", divider = 'grey')
         theme = st.selectbox("Theme", options=THEMES, index=35)
@@ -244,9 +302,6 @@ with c1:
     )
     
     
-    
-
-
 with c2:
     st.empty()
 

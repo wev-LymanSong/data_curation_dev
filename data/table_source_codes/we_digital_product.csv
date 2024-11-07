@@ -1,0 +1,288 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,## we_meta.we_digital_prod
+2,md,,basic_info,"#### Basic Info
+* 위버스&기타 플랫폼 내 무형의 디지털 상품들 메타 데이터 테이블
+* META TABLE
+* DAILY APPEND
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2023-04-04 |송재영|마트 생성 & 배치 실행|
+|2023-05-12 |송재영|sale_start_dt 로직 수정, is_on_sale 로직 수정, 컬럼명 변경(pay_method => pay_system, market => pay_method)|
+|2023-11-09 |송재영|젤리 구독 결제 방법 추가(dur_unit, promotion_unit 컬럼 추가)|
+|2024-05-29 |송재영|인앱 구독 젤리관련 수정|
+
+###### Source Tables
+* product.product
+* product.product_payment_option
+* product.promotion
+* we_meta.we_media_product_sale_info
+* we_mart.ws_goods_stock
+* jelly.point
+* jelly.point_group
+* phoning.product"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"import pyspark.sql.functions as F
+
+key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_meta',
+  'table_name' : 'we_digital_product', 
+  'service' : None, #default (None)
+  'partition' : ['part_date']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'append', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+}
+
+spark.sql(""set time zone 'Asia/Seoul'"")"
+6,md ,,etc, #### Main Query
+7,md,,just_heading,##### Product infos
+8,py,,code,"def get_df(key_date):
+    df = spark.sql(f""""""
+    select distinct
+    'PRODUCT' as data_source
+    -- PRODUCT LEVEL FEATURES
+    , int(PROD.product_id)
+    , case when PROD.type in ('TVOD', 'SVOD') then 'p'
+        when PROD.type = 'WDM' then 'd'
+        else null end as wv_product_prefix
+    , concat(case when PROD.type in (""TVOD"", ""SVOD"") then 'p'
+        when PROD.type = 'WDM' then 'd'
+        else null end
+        , string(PROD.product_id)) as wv_product_key
+    , PROD.title as product_name
+    , WGS.goods_name as ws_goods_name
+    , PROD.type as product_type 
+    , case when PROD.type in ('TVOD', 'SVOD') then 1 else 0 end as is_media_product
+    , ART.we_art_id
+    , ART.we_art_name
+    , PROD.artist_wid
+    , PROD.status as sale_status
+    , timestamp(from_unixtime(PROD.sale_start_at)) as sale_start_dt
+    , timestamp(from_unixtime(PROD.sale_end_at)) as sale_end_dt
+    , case when PROD.status = 'SALE' and ((timestamp(from_unixtime(PROD.sale_start_at)) <= current_timestamp() 
+    and nvl(timestamp(from_unixtime(PROD.sale_end_at)), timestamp('2999-12-31')) >= current_timestamp()) or PROD.sale_start_at is null) then 1
+    else 0 end as is_on_sale -- sale_start_at이 null이라는 것은 기간 관리를 하지 않는 상시 판매 제품으로 이해
+
+    -- PRODUCT X PAY_OPTION LEVEL FEATURES
+    , int(POPT.product_payment_option_id)
+    , int(POPT.paid_item_id)
+    , POPT.store_item_id
+    -- , POPT.is_enabled as is_pay_method_enabled
+    , case when PROD.with_weverseshop_sale = 1 and POPT.payment_method = 'WS' then 'WS' 
+    else 
+        case when type rlike 'PHONING' then 'PH'
+        else 'WV'
+        end
+    end as product_source
+    , case when POPT.payment_method = 'WS' then 'PG' else 
+        case when POPT.payment_method  = 'SUBSCRIPTION' and PROD.type = 'WDM' then 'JELLY'
+             when POPT.payment_method  = 'INAPPSUBSCRIPTION' and PROD.type = 'WDM' then 'JELLY'
+        else POPT.payment_method end
+    end as pay_system
+    , case when POPT.duration_type is not null then POPT.duration_type
+    else 
+        case when PROD.with_weverseshop_sale = 1 then 'INFINITE' end
+    end as dur_type
+    , case when POPT.duration_value is not null and POPT.duration_value > 0 then POPT.duration_unit else null end as dur_unit
+    , case when POPT.duration_value is not null and POPT.duration_value > 0 then int(POPT.duration_value) else null end as dur_value
+
+    -- SALE & PAYMENT RELATED FEATURES
+    , POPT.sale_id
+    , WGS.shop
+    , case when POPT.payment_method = 'WS' then 'WEVERSE_SHOP'
+           when POPT.payment_method = 'JELLY' then 'JELLY'
+    else case when PROD.type in ('TVOD', 'SVOD') then case when WMS.market is not null then WMS.market else POPT.payment_method end
+                when PROD.type = 'GENERAL_CHARGING_JELLY' then 
+                case when JLY.channel = 'IOS' then 'APPLE_APPSTORE' else 'GOOGLE_PLAYSTORE' end
+                when PROD.type = 'WDM' then POPT.payment_method
+                when PROD.type = 'FAN_LETTER' then POPT.payment_method
+                when PROD.type = 'MEMBERSHIP_PHONING' then PHN.market
+            end
+    end as pay_method
+    , case when PROD.with_weverseshop_sale = 1 and POPT.payment_method = 'WS' then WGS.final_sale_price
+        when POPT.payment_method in ('INAPPSUBSCRIPTION', 'SUBSCRIPTION', 'JELLY') then POPT.sale_points
+        when POPT.payment_method = 'INAPP' then
+        case when PROD.type in ('TVOD', 'SVOD') then 
+                case when POPT.paid_item_id in (7, 10) then 9900
+                    when POPT.paid_item_id in (8, 11) then 19000
+                else WMS.sale_price_krw end
+                when PROD.type = 'MEMBERSHIP_PHONING' then PHN.sale_price
+        else JLY.price end
+    end as sale_price
+    , case when PROD.with_weverseshop_sale = 1 and POPT.payment_method = 'WS' then WGS.currency_code
+        when POPT.payment_method in ('INAPPSUBSCRIPTION', 'SUBSCRIPTION', 'JELLY') then 'JELLY'
+        when POPT.payment_method = 'INAPP' then 'KRW'
+    end as currency_code
+    , PROD.wbs_code
+
+    -- OTHER & PROMOTION 
+    , PROMO.duration_type as promotion_type
+    , PROMO.duration_unit as promotion_unit
+    , int(PROMO.duration_value) as promotion_value
+
+    , '{key_date}' as part_date
+
+    from wev_prod.product.product as PROD
+    left join wev_prod.product.product_payment_option as POPT
+    on PROD.product_id = POPT.product_id
+    left join wev_prod.we_mart.we_artist as ART
+    on case when type rlike 'PHONING' then  ART.we_art_id = 69 else PROD.community_id = ART.comm_id end
+
+    -- PROMOTION INFO
+    left join wev_prod.product.promotion as PROMO
+    on POPT.product_payment_option_id = PROMO.product_payment_option_id
+
+    -- FROM WS GOODS
+    left join we_mart.ws_goods_stock as WGS
+    on WGS.sale_id = POPT.sale_id and WGS.part_date = '{key_date}'
+
+    -- FROM GOOGLE SPREAD SHEET
+    left join we_meta.we_media_product_sale_info as WMS
+    on WMS.id = POPT.product_id and WMS.part_date = '{key_date}'
+    and 1 = case when POPT.payment_method = 'INAPP' then 1 
+            else 0
+            end
+    and WMS.product_type = 'PACKAGE'
+
+    -- FROM JELLY
+    left join (
+    select *
+    from jelly.point as a
+    left join jelly.point_group as b
+    on a.group_id = b.id
+    ) as JLY
+    on PROD.product_id = JLY.product_id
+
+    -- FROM PHONING
+    left join (
+    select weverse_product_id as product_id, market
+    , case when weverse_product_id = 120 then 9900
+            when weverse_product_id = 121 then 99000
+        end as sale_price
+    from phoning.product
+    lateral view explode(array('APPLE_APPSTORE', 'GOOGLE_PLAYSTORE')) as market
+    where weverse_product_id in (120, 121)
+    ) as PHN
+    on PROD.product_id = PHN.product_id
+
+
+    where PROD.title not rlike '테스트'
+    and (ART.comm_open_type = 'PUBLIC' or ART.we_art_id = 69 or PROD.type rlike 'JELLY')
+
+    UNION ALL
+
+    select 
+    'COUPON' as data_source
+    , WMS.id as product_id
+    , 'c' as wv_product_prefix
+    , concat('c', string(WMS.id)) as wv_product_key
+    , WMS.product_name as product_name
+    , WGS.goods_name as ws_goods_name
+    , 'TVOD' as product_type
+    , 1 as is_media_product
+    , WGS.we_art_id
+    , WGS.we_art_name
+    , null as aritst_wid
+    , case when WGS.avail_sale_qty > 0 then 'SALE' else 'STOP' end as sale_status
+    , WGS.sale_cre_dt as sale_start_dt
+    , case when WGS.avail_sale_qty > 0 then null else WGS.sale_stock_upd_dt - interval 9 hours end as sale_end_dt
+    , case when WGS.avail_sale_qty > 0 then 1 else 0 end as is_on_sale
+    , null as product_payment_option_id
+    , null as paid_item_id
+    , null as store_item_id
+    , 'WS' as product_source
+    , 'PG' as pay_system
+    , 'INFINITE' as dur_type
+    , null as dur_unit
+    , null as dur_type
+    , WGS.sale_id
+    , WGS.shop
+    , 'WEVERSE_SHOP' as pay_method
+    , WGS.final_sale_price
+    , WGS.currency_code
+    , WGS.wbs_code
+    , null as promotion_type
+    , null as promotion_unit
+    , null as promotion_value
+    , '{key_date}' as part_date
+    from (
+    select *
+    from we_meta.we_media_product_sale_info
+    where part_date = '{key_date}'
+    and product_type = 'COUPON'
+    order by id, sale_id
+    ) as WMS
+    left join we_mart.ws_goods_stock as WGS
+    on WMS.sale_id = WGS.sale_id and WGS.part_date = '{key_date}'
+    order by data_source, product_id, product_payment_option_id
+    """""")
+
+    df = df.select('*').withColumn('run_timestamp', F.current_timestamp())
+    
+    return df"
+9,md,,just_heading,#### Run
+10,py,,code,"dflow = Dataflow(run_mode=run_mode, notifier=noti)
+dflow.run(dataframe=get_df(key), table_info=table, option=option, buckets=['databricks'])"
+11,md,,just_heading,#### Appendix
+12,md,,just_heading,##### create query
+13,py,,code,"cre_q = f""""""
+create or replace table {table[""database""] + '.' + table[""table_name""]}
+(
+  data_source	string	comment	'데이터를 가져온 소스'
+, product_id	int	comment	'상품 ID, data_source에 따라 unique'
+, wv_product_prefix	string	comment	'위버스내 상품들의 종류 별 prefix'
+, wv_product_key	string	comment	'위버스내 관리 상품 Key'
+, product_name	string	comment	'디지털 상품 명'
+, ws_goods_name	string	comment	'위버스 샵에서 사용중인 상품 명'
+, product_type	string	comment	'디지털 상품 종류'
+, is_media_product	int	comment	'미디어 상품일 경우'
+, we_art_id	int	comment	'위버스 플랫폼 통합 아티스트/커뮤니티 ID'
+, we_art_name	string	comment	'위버스 플랫폼 통합 아티스트/커뮤니티 명'
+, artist_wid	string	comment	'위버스에서 사용중인 아티스트 ID'
+, sale_status	string	comment	'판매 상태'
+, sale_start_dt	timestamp	comment	'판매 시작일'
+, sale_end_dt	timestamp	comment	'판매 종료일'
+, is_on_sale	int	comment	'현재 판매 중인지 여부'
+, product_payment_option_id	int	comment	'상품 지불 옵션 ID'
+, paid_item_id	int	comment	'인앱 결제 가능한 상품 ID'
+, store_item_id	string	comment	'인앱 결제용 마켓별 사용 상품 ID'
+, product_source	string	comment	'결제 플랫폼'
+, pay_system	string	comment	'결제 방식/옵션'
+, dur_type	string	comment	'구매상품 적용 유형'
+, dur_unit	string	comment	'구매상품 유형에 따른 단위'
+, dur_value	int	comment	'구매상품 단위에 따른 적용 값'
+, sale_id	bigint	comment	'weverseshop sale_id'
+, shop	string	comment	'weverseshop shop'
+, pay_method	string	comment	'결제방식에 따른 결제 옵션/마켓'
+, sale_price	double	comment	'판매가격'
+, currency_code	string	comment	'통화 코드'
+, wbs_code	string	comment	'WBS 코드'
+, promotion_type	string	comment	'이벤트 타입'
+, promotion_unit	string	comment	'이벤트 타입에 따른 단위'
+, promotion_value	int	comment	'이벤트 단위에 따른 값'
+, part_date	string	comment	""파티션 일자""
+, run_timestamp timestamp comment ""데이터 입력 일시""
+)
+partitioned by (part_date)
+comment '위버스&기타 플랫폼 내 무형의 디지털 상품들 메타 데이터 테이블'
+""""""
+
+# spark.sql(cre_q)
+"

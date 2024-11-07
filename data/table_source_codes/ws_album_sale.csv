@@ -1,0 +1,241 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,## we_mart.ws_album_sal
+2,md,,basic_info,"#### Basic Info
+* 일간 위버스 앨범 판매
+* Mart Primary 
+* DAILY APPEND
+* WIKI : [LINK](https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/3447130608/we+mart.ws+album+sale) 
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2022-10-03 |송재영|마트생성|
+|2022-12-08 |송재영|마트개편|
+|2023-06-27 |송재영|wa_album_id 를 null로 변경; 복수의 wa_album_id가 있는 앨범의 경우 때문|
+|2024-08-21 |송재영|goods_option_code 컬럼 추가; 앨범 차트 반영 집계 테이블과의 매핑 때문|
+
+###### Source Tables
+* we_meta.ws_album
+* we_mart.wa_album
+* we_mart.ws_order"
+3,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+4,py,,setting,"
+key = dbutils.widgets.get(""target_date"")
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"") #""#data-analytics-alert-test""
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'ws_album_sale', 
+  'service' : 'weverseshop, weversealbum', #default (None)
+  'partition' : ['part_date']
+}
+option = {
+  'date' : key,
+  'format': 'delta', #default (delta)
+  'mode' : 'append', #default (append)
+  'period' : 'daily', #default (daily)
+  'noti' : True, #default (True)
+}
+
+
+# 타임존은 UTC인 상태에서 -9 hours 해주어 실제 UTC로 바꿔 저장해놓기
+#   - 이후 stat 테이블에선 KST로 변환 후 date 함수 씌워 사용
+# set time zone to UTC
+spark.sql(""set time zone 'Etc/UTC'"")
+spark.sql(""use catalog 'wev_prod'"")"
+5,md ,,etc, #### Main Query
+6,py,,code,"def main_q(key, meta_part_date):
+  spark.sql(""""""
+  create or replace temp view album_meta as 
+  select distinct a.* except (album_scm_option_type), null as wa_album_id, case when b.wa_album_id is not null then 1 else 0 end has_weverse_album
+  from we_meta.ws_album as a
+  left join we_mart.wa_album as b
+  on a.album_id = b.album_id
+  where a.part_date = '{key}'
+  """""".format(key = meta_part_date))
+  
+  df = spark.sql(""""""
+  with data as (
+    /*
+    모든 일시 컬럼은 [UTC세팅-KST시간]에서 [UTC세팅-UTC시간]로 맞추기 위해 -9 hours를 해줌
+    */
+    select 
+      SHOP.we_member_id
+    , SHOP.is_fc
+    , SHOP.shop
+    , SHOP.ord_sheet_number
+    , SHOP.ord_item_id
+    , META.ws_label_name
+    , META.we_art_id
+    , META.we_art_name
+    , SHOP.sale_id
+    , SHOP.goods_name
+    , SHOP.goods_option_code
+    , SHOP.goods_option_name
+    , META.album_id
+    , META.album_name
+    , META.has_weverse_album
+    , META.album_qty_type
+    , META.album_option_type
+    , META.album_physical_type
+    , META.is_wa_included as is_weverse_album
+    , META.wa_album_id
+    , SHOP.sale_price
+    , SHOP.currency_code
+    , SHOP.ord_item_qty
+    , SHOP.ord_item_cx_qty
+    , SHOP.album_qty
+    , SHOP.ord_item_amt
+    , SHOP.ord_item_amt_krw
+    , SHOP.ord_item_cx_amt
+    , SHOP.ord_item_cx_amt_krw
+    , SHOP.currency_rate
+    , SHOP.ord_cre_dt - interval 9 hours as ord_cre_dt
+    , SHOP.pay_dt - interval 9 hours as pay_dt
+    , case when SHOP.is_cx = 1 then ord_upd_dt - interval 9 hours else null end as cx_dt
+    , min(pay_dt - interval 9 hours) over (
+        partition by META.album_id, SHOP.we_member_id 
+        order by pay_dt 
+        rows between unbounded preceding and unbounded following
+      ) as first_album_pay_dt
+    , min(pay_dt - interval 9 hours) over (
+        partition by META.album_id
+        , album_qty_type
+        , SHOP.we_member_id 
+        order by pay_dt 
+        rows between unbounded preceding and unbounded following
+      ) as first_album_qty_pay_dt
+    , min(pay_dt - interval 9 hours) over (
+        partition by META.album_id
+        , album_option_type
+        , SHOP.we_member_id 
+        order by pay_dt 
+        rows between unbounded preceding and unbounded following
+      ) as first_album_opt_pay_dt
+    , min(pay_dt - interval 9 hours) over (
+        partition by META.album_id
+        , album_qty_type, album_option_type
+        , SHOP.we_member_id 
+        order by pay_dt 
+        rows between unbounded preceding and unbounded following
+      ) as first_album_qty_opt_pay_dt
+    --------- SHOP 도 넣기
+    , min(pay_dt - interval 9 hours) over (
+        partition by META.album_id, SHOP.shop, SHOP.we_member_id 
+        order by pay_dt 
+        rows between unbounded preceding and unbounded following
+      ) as first_album_shop_pay_dt
+    , min(pay_dt - interval 9 hours) over (
+        partition by META.album_id
+        , album_qty_type
+        , SHOP.shop, SHOP.we_member_id 
+        order by pay_dt 
+        rows between unbounded preceding and unbounded following
+      ) as first_album_qty_shop_pay_dt
+    , min(pay_dt - interval 9 hours) over (
+        partition by META.album_id
+        , album_option_type
+        , SHOP.shop, SHOP.we_member_id 
+        order by pay_dt 
+        rows between unbounded preceding and unbounded following
+      ) as first_album_opt_shop_pay_dt
+    , min(pay_dt - interval 9 hours) over (
+        partition by META.album_id
+        , album_qty_type, album_option_type
+        , SHOP.shop, SHOP.we_member_id 
+        order by pay_dt 
+        rows between unbounded preceding and unbounded following
+      ) as first_album_qty_opt_shop_pay_dt
+    , SHOP.ctry_code
+    , SHOP.ship_ctry_code
+    from we_mart.ws_order as SHOP
+    join album_meta as META
+    on SHOP.sale_id = META.sale_id
+    where 1=1
+    and SHOP.logi_cat in ('ALBUM')
+    and SHOP.is_pay = 1
+  )
+  select *
+  , current_timestamp() as run_timestamp
+  , '{key}' as part_date
+  from data
+  where 1=1
+  AND 
+  -- 앞에서 -9 hours를 했지만 당일 건만 가져오기 위해 조건에선 다시 + 9 hour를 해줌
+  ( 
+    DATE(pay_dt + interval 9 hours) = '{key}' -- 당일 결제분
+  or
+    CASE WHEN cx_dt is not null then 
+    DATE(cx_dt + interval 9 hours) = '{key}' -- 당일 취소분
+    END
+  )
+
+  """""".format(key = key)
+  )
+  return df"
+7,md,,just_heading,### Run
+8,py,,code,"b = Dataflow(run_mode=run_mode, notifier=noti)
+b.run(dataframe=main_q(key, key), table_info=table, option=option, buckets=['databricks'])"
+9,md,,just_heading,### Appendix
+10,md,,just_heading,###### create table
+11,py,,code,"q = """"""
+create or replace table we_mart.ws_album_sale
+(
+  we_member_id	bigint	comment	""we_member_id""
+, is_fc	int	comment	""구매시 멤버십 상태 여부""
+, shop	string	comment	""위버스샵의 구매 샵 명""
+, ord_sheet_number	bigint	comment	""주문번호""
+, ord_item_id bigint  comment ""상품 주문 ID""
+, ws_label_name string comment ""아티스트 소속 레이블명""
+, we_art_id	int	comment	""we_art_id""
+, we_art_name	string	comment	""we_art_name""
+, sale_id	bigint	comment	""판매 id""
+, goods_name	string	comment	""상품명""
+, goods_option_code	string	comment	""상품 코드명""
+, goods_option_name	string	comment	""상품 옵션명""
+, album_id	int	comment	""앨범 고유 번호""
+, album_name	string	comment	""정식 앨범명 (가급적 영어)""
+, has_weverse_album	int	comment	""해당 앨범이 위버스 앨범을 가지고 있는지 여부""
+, album_qty_type	string	comment	""앨범 판매 단위 종류 (랜덤, 세트, 옵션 등)""
+, album_option_type	string	comment	""앨범 패키지 및 형태 구분 (디럭스, 일반, 위버스앨범, 스페셜, 콤팩트, KiT..)""
+, album_physical_type	string	comment	""앨범 물리 형태 구분(실물 앨범 유형)""
+, is_weverse_album	int	comment	""위버스 앨범 여부""
+, wa_album_id	int	comment	""위버스 앨범 ID""
+, sale_price double comment '판매금액'
+, currency_code string comment '통화'
+, ord_item_qty	int	comment	""주문상품 수량""
+, ord_item_cx_qty	int	comment '취소/환불상품 수량'
+, album_qty	int	comment	""앨범수량""
+, ord_item_amt double comment '주문상품 금액'
+, ord_item_amt_krw double comment '주문상품 금액 (KRW)'
+, ord_item_cx_amt double comment '취소/환불상품 금액'
+, ord_item_cx_amt_krw double comment '취소/환불상품 금액 (KRW)'
+, currency_rate double comment '환율'
+, ord_cre_dt	timestamp	comment	""주문 생성 시간 (UTC)""
+, pay_dt	timestamp	comment	""결제 완료 시간 (UTC)""
+, cx_dt	timestamp	comment	""취소 시간 (UTC)""
+, first_album_pay_dt	timestamp	comment	""앨범 단위 가장 먼저 결제 완료한 시간 (UTC)""
+, first_album_qty_pay_dt	timestamp	comment	""앨범 판매 수 단위 가장 먼저 결제 완료한 시간 (UTC)""
+, first_album_opt_pay_dt	timestamp	comment	""앨범 옵션 단위 가장 먼저 결제 완료한 시간 (UTC)""
+, first_album_qty_opt_pay_dt	timestamp	comment	""앨범 판매 수 and 옵션 단위 가장 먼저 결제 완료한 시간 (UTC)""
+, first_album_shop_pay_dt	timestamp	comment	""샵별 앨범 단위 가장 먼저 결제 완료한 시간 (UTC)""
+, first_album_qty_shop_pay_dt	timestamp	comment	""샵별 앨범 판매 수 단위 가장 먼저 결제 완료한 시간 (UTC)""
+, first_album_opt_shop_pay_dt	timestamp	comment	""샵별 앨범 옵션 단위 가장 먼저 결제 완료한 시간 (UTC)""
+, first_album_qty_opt_shop_pay_dt	timestamp	comment	""샵별 앨범 판매 수 and 옵션 단위 가장 먼저 결제 완료한 시간 (UTC)""
+, ctry_code	string	comment	""user 국가코드""
+, ship_ctry_code	string	comment	""배송 국가코드""
+, run_timestamp	timestamp	comment	""데이터 적재 시간 (UTC)""
+, part_date string comment ""파티션 key date 값""
+) 
+comment ""위버스 앨범 판매 마트"" 
+partitioned by (part_date)
+""""""
+# spark.sql(q)
+"

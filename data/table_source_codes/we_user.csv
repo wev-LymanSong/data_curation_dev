@@ -1,0 +1,426 @@
+,cell_type,cell_title,role,codes
+1,md,,just_heading,### we_
+2,md,,basic_info,"#### Basic Info
+* 위멤버 기준 위버스, 샵, 앨범, 포닝 등 다양한 서비스의 통합 회원 정보, 일간 스냅샷으로 저장
+* Mart Primary 
+* DAILY APPEND
+* WIKI : 
+
+###### history
+|Date |Contributor|Comment|
+|:-------|:-------|:---------------------|
+|2022-07-18 |사공재현|위버스2 마트생성/배치생성|
+|2022-07-19 |사공재현|wv_last_access_dt 추가|
+|2022-08-11 |사공재현|wv_lang 중복 제거|
+|2022-08-23 |사공재현|위버스앨범, 포닝 추가|
+|2022-09-15 |사공재현|위멤버 탈퇴일 추가|
+|2022-09-27 |사공재현|국가 정보 사용 테이블 변경|
+|2022-11-16 |사공재현|vlive 연동 정보 추가|
+|2022-12-23 |사공재현|야간푸시동의 추가|
+|2024-06-06 |송재영|wv_leave_dt 계산에 사용되는 tempview 조인 로직 변경|
+|2024-07-01 |송재영|컬럼명 수정/추가/삭제 등 개편 및 경량화 진행([참고 링크](https://bighitcorp.atlassian.net/wiki/spaces/OD/pages/3919217059/we+user+2406))|
+|2024-07-16 |송재영|계정 통합으로 인한 wv_service_user_key의 생성 로직 변경|
+
+###### Source Tables
+* we_mart.ods_wemember_user
+* we_mart.ods_wv_user
+* we_mart.ods_ws_user
+* we_mart.we_user(전일 참조)
+* weverse2.user_last_accessed_at
+* we_mart.wv_user_country_update
+* we_mart.ws_user_country_update
+* album.user
+* we_mart.ods_ph_fan_user
+* weverse2.community_common_v_member_migration"
+3,md,,just_heading,#### Settings
+4,run,,etc, /Repos/databricks-prod/databricks/src/data_platform/dataflow/dataflow
+5,py,,setting,"from datetime import datetime, timedelta
+
+key = dbutils.widgets.get(""target_date"")
+yesterday_key = (datetime.strptime(key, ""%Y-%m-%d"") - timedelta(days = 1)).strftime('%Y-%m-%d')
+run_mode = dbutils.widgets.get(""run_mode"")
+
+slack_token = dbutils.secrets.get(scope=""slack"", key=""slack-token"")
+channel = dbutils.secrets.get(scope=""slack"", key=""analytics-channel"")
+
+noti = {
+  'channel' : channel,
+  'token' : slack_token
+}
+
+table = {
+  'database' : 'we_mart',
+  'table_name' : 'we_user', 
+  'service' : 'wemember',  #default (None)
+  'partition' : ['part_date']
+}
+
+option = {
+      'date' : key, 
+      'format':'delta', #default (delta)
+      'mode': 'append', #default (append)
+      'period': 'daily', #default (daily)
+      'noti' : True #default (True) 
+}"
+6,md,,just_heading,#### Main Query
+7,md,,just_heading,##### Country Info
+8,py,,code,"spark.sql('''
+select distinct case when a.user_id is null then b.member_id when b.user_id is null then a.member_id else a.member_id end as we_member_id, a.user_id as wv_user_id
+      , first(a.country) over (partition by a.user_id order by a.created_at) as wv_country
+      , first(a.ip) over (partition by a.user_id order by a.created_at) as wv_ip
+      , first(a.created_at) over (partition by a.user_id order by a.created_at) as wv_created_at
+      , b.user_id as ws_user_id
+      , first(b.country) over (partition by b.user_id order by b.created_at) as ws_country
+      , first(b.ip) over (partition by b.user_id order by b.created_at) as ws_ip
+      , first(b.created_at) over (partition by b.user_id order by b.created_at) as ws_created_at
+from (
+      select distinct a.user_id, member_id, country, ip, created_at 
+      from we_mart.wv_user_ctry_history as a 
+      join (select distinct
+            first(user_id) over (partition by member_id order by created_at desc) as user_id
+            from we_mart.wv_user_ctry_history
+            ) as b
+      on a.user_id = b.user_id 
+      )as a
+full outer join (
+      select distinct a.user_id, member_id, country, ip, created_at 
+      from we_mart.ws_user_ctry_history as a 
+      join (select distinct
+            first(user_id) over (partition by member_id order by created_at desc) as user_id
+            from we_mart.ws_user_ctry_history
+            ) as b
+      on a.user_id = b.user_id 
+      ) as b 
+on a.member_id = b.member_id
+''').createOrReplaceTempView('first_country_ip')"
+9,md,,just_heading,##### User Mapping Table
+10,py,,code,"spark.sql(f""""""
+     select coalesce(we.we_member_id, we_user.we_member_id)              as we_member_id
+
+          /* WV USER 계산 */
+          , coalesce(we.wv_user_id, we_user.wv_user_id)                  as wv_user_id                   -- 아이디가 바꼈다면 바뀐 아이디로 변경
+          , case when we.wv_user_id is not null and we_user.wv_user_id is not null then 
+                         we_user.wv_first_cre_dt        -- 어제 오늘 둘 다 존재하면 처음 최초 가입일                       
+                 when we.wv_user_id is not null and we_user.wv_user_id is null then we.wv_cre_dt         -- 어제는 없고 오늘은 있음 --> 새로 가입 
+                 when we.wv_user_id is null and we_user.wv_user_id is not null then we_user.wv_first_cre_dt -- 오늘은 없고 어제는 있음 --> 탈퇴로 인해 ods_wv_user 테이블에서 we_member_id가 없는 것 --> 처음 최초 가입일 
+            else null end as wv_first_cre_dt                                                             -- 둘 다 없으면 null
+
+          , case when we.wv_user_id is not null and we_user.wv_user_id is not null then (                  -- 1. 어제 오늘 둘 다 존재                  
+                    case when we.wv_user_id = we_user.wv_user_id then we_user.wv_join_dt                   -- 1-1. 둘의 id가 같으면 기존에 있던 가입 날짜로
+                         when we.wv_user_id != we_user.wv_user_id then we.wv_cre_dt                        -- 1-2. 둘의 id가 다름 --> 재가입 유저라면 새로 만들어진 계정의 생성 날짜로
+                    end
+                 )
+                 when we.wv_user_id is not null and we_user.wv_user_id is null then we.wv_cre_dt         -- 2. 어제는 없고 오늘은 있음 --> 새로 가입 
+                 when we.wv_user_id is null and we_user.wv_user_id is not null then we_user.wv_join_dt   -- 3. 오늘은 없고 어제는 있음 --> 탈퇴로 인해 ods_wv_user 테이블에서 we_member_id가 없는 것            
+            else null end                                               as wv_join_dt                    -- 둘 다 없으면 null
+
+          , we_user.wv_first_join_dt                                    as wv_first_join_dt              -- 우선 임시로 저장, 이후 마지막 단계에서 다시 계산
+
+          , case when we.wv_user_id is not null and we_user.wv_user_id is not null then (                -- 어제 오늘 둘 다 존재하는데
+                 case when we.wv_user_id != we_user.wv_user_id then wv_trans_seq + 1                          -- 위버스의 id가 바꼈다면 재가입, 아이디 변화 컬럼 + 1
+                      else we_user.wv_trans_seq                                                               -- 안바꼈으면 그대로
+                 end                                       
+               )
+                 when we.wv_user_id is not null and we_user.wv_user_id is null then 1                    -- 어제는 없고 오늘은 있음 --> 새로 가입 
+                 when we.wv_user_id is null and we_user.wv_user_id is not null then we_user.wv_trans_seq -- 오늘은 없고 어제는 있음 --> 탈퇴로 인해 ods_wv_user 테이블에서 we_member_id가 없는 것            
+            else null end                                                as wv_trans_seq                 -- 둘 다 없음
+          
+          /* WS USER 계산 */
+          , coalesce(we.ws_user_id, we_user.ws_user_id)                  as ws_user_id                   -- 아이디가 바꼈다면 바뀐 아이디로 변경
+          , case when we.ws_user_id is not null and we_user.ws_user_id is not null then we_user.ws_first_cre_dt        -- 어제 오늘 둘 다 존재하면 처음 최초 가입일                       
+                 when we.ws_user_id is not null and we_user.ws_user_id is null then we.ws_cre_dt         -- 어제는 없고 오늘은 있음 --> 새로 가입 
+                 when we.ws_user_id is null and we_user.ws_user_id is not null then we_user.ws_first_cre_dt -- 오늘은 없고 어제는 있음 --> 탈퇴로 인해 ods_ws_user 테이블에서 we_member_id가 없는 것 --> 처음 최초 가입일 
+            else null end as ws_first_cre_dt                                                             -- 둘 다 없으면 null
+
+          , case when we.ws_user_id is not null and we_user.ws_user_id is not null then (                -- 1. 어제 오늘 둘 다 존재                  
+                      case when we.ws_user_id = we_user.ws_user_id then we_user.ws_join_dt                   -- 1-1. 둘의 id가 같으면 기존에 있던 가입 날짜로
+                           when we.ws_user_id != we_user.ws_user_id then we.ws_cre_dt                        -- 1-2. 둘의 id가 다름 --> 재가입 유저라면 새로 만들어진 계정의 생성 날짜로
+                      end
+                 )
+                 when we.ws_user_id is not null and we_user.ws_user_id is null then we.ws_cre_dt         -- 2. 어제는 없고 오늘은 있음 --> 새로 가입 
+                 when we.ws_user_id is null and we_user.ws_user_id is not null then we_user.ws_join_dt   -- 3. 오늘은 없고 어제는 있음 --> 탈퇴로 인해 ods_ws_user 테이블에서 we_member_id가 없는 것            
+            else null end                                               as ws_join_dt                    -- 둘 다 없으면 null
+            
+          , we_user.ws_first_join_dt                                    as ws_first_join_dt              -- 우선 임시로 저장, 이후 마지막 단계에서 다시 계산
+
+          , case when we.ws_user_id is not null and we_user.ws_user_id is not null then (                -- 어제 오늘 둘 다 존재하는데
+                 case when we.ws_user_id != we_user.ws_user_id then ws_trans_seq + 1                          -- 위버스의 id가 바꼈다면 재가입, 아이디 변화 컬럼 + 1
+                      else we_user.ws_trans_seq                                                               -- 안바꼈으면 그대로
+                 end                                       
+               )
+                 when we.ws_user_id is not null and we_user.ws_user_id is null then 1                    -- 어제는 없고 오늘은 있음 --> 새로 가입 
+                 when we.ws_user_id is null and we_user.ws_user_id is not null then we_user.ws_trans_seq -- 오늘은 없고 어제는 있음 --> 탈퇴로 인해 ods_ws_user 테이블에서 we_member_id가 없는 것            
+            else null end                                                as ws_trans_seq                 -- 둘 다 없음
+     
+          /* 기타 이전 일자 정보 (final table 에서 채워주는 용도로 사용) */
+          , we_user.join_service
+          , we_user.wv_lang
+          , we_user.wv_status
+          , we_user.wv_cre_dt
+          , we_user.wv_upd_dt
+          , we_user.wv_leave_dt
+          , we_user.wv_last_access_dt
+          , we_user.ws_lang
+          , we_user.ws_status
+          , we_user.ws_cre_dt
+          , we_user.ws_upd_dt
+     
+     /* target_date 데이터, we_member_id로 맵핑 */
+     from (
+          select we.we_member_id
+          , wv.id as wv_user_id, wv.created_at as wv_cre_dt, wv.updated_at as wv_upd_dt, wv.status as wv_status
+          , ws.user_id as ws_user_id, ws.created_at as ws_cre_dt, ws.updated_at as ws_upd_dt, ws.status as ws_status
+          from (
+               select distinct id as we_member_id
+               from we_mart.ods_wemember_user
+               where part_date = '{key}'
+               and date(created_at) <= '{key}'
+          ) as we
+          left join (
+               select *
+               from we_mart.ods_ws_user
+               where part_date = '{key}'
+               and date(created_at) <= '{key}'
+          ) as ws
+          on we.we_member_id = ws.we_member_id
+          left join (
+               select id, we_member_user_key, status, country, we_member_id, created_at + interval '9' hour as created_at, updated_at + interval '9' hour as updated_at
+               from we_mart.ods_wv_user
+               where part_date = '{key}'
+               and date(created_at + interval 9 hours) <= '{key}'
+          ) as wv
+          on we.we_member_id = wv.we_member_id
+     ) as we 
+     
+     /* 이전 일자 we_user 데이터 */
+     full outer join (
+          select *
+          from wev_prod.we_mart.we_user
+          where part_date = '{yesterday_key}'
+     ) as we_user
+     on we.we_member_id = we_user.we_member_id
+"""""").createOrReplaceTempView('we_user_mapping_table')"
+11,md,,just_heading,##### Other Info Table
+12,py,,code,"spark.sql(f""""""
+select distinct user_id
+     , first(language) over(partition by user_id order by created_at) as language
+     , marketing_push_update_at
+     from we_mart.ods_wv_notification_device
+     where part_date = '{key}'
+""""""
+).createOrReplaceTempView('wv_user_set')
+
+spark.sql(f""""""
+     select distinct a.we_member_id, nvl(b.updated_at, a.updated_at) as leaved_at
+     from(
+          select id, we_member_user_key, status, country, we_member_id, country, we_member_id, created_at + interval '9' hour as created_at, updated_at + interval '9' hour as updated_at
+          from we_mart.ods_wv_user 
+          where part_date = '{yesterday_key}'
+     ) a left join(
+          select id, we_member_user_key, status, country, we_member_id, country, we_member_id, created_at + interval '9' hour as created_at, updated_at + interval '9' hour as updated_at
+          from we_mart.ods_wv_user 
+          where part_date = '{key}'
+     ) b
+     on a.id=b.id
+     where b.status in ('DEACTIVATED','RETIRE') or b.we_member_id is null
+""""""
+).createOrReplaceTempView('wv_user_leave')
+
+spark.sql(f""""""
+    select a.account_id, a.user_id, a.ph_cre_dt, b.ph_first_join_dt, a.ph_last_access_at, a.ph_withdrawal_at
+    from(
+        select account_id, user_id, timestamp(created_at/1000) as ph_cre_dt, timestamp(last_access_at/1000) as ph_last_access_at, timestamp(withdrawal_at/1000) as ph_withdrawal_at
+        from(
+            select * 
+            , row_number() over(partition by account_id order by created_at desc, user_id) as rank
+            from we_mart.ods_ph_fan_user
+            where part_date = '{key}' 
+            and date(timestamp(created_at/1000))  <= date('{key}')
+            ) a
+        where rank = 1
+        ) a,
+        (
+        select account_id, min(timestamp(created_at/1000)) as ph_first_join_dt
+        from we_mart.ods_ph_fan_user
+        where part_date = '{key}' 
+        and date(timestamp(created_at/1000)) <= date('{key}')
+        group by 1
+        ) b
+    where a.account_id = b.account_id
+"""""").createOrReplaceTempView('ph_user')
+
+spark.sql(f""""""
+     select w_user_id as wv_user_id
+     , v_user_seq as vlive_id
+     , timestamp(created_at/1000) + interval '9' hour as vlive_linked_at
+     from weverse2.community_common_v_member_migration
+""""""
+).createOrReplaceTempView('vlive_link')"
+13,md,,just_heading,##### Final Table
+14,py,,code,"fin_df = spark.sql(f""""""
+     select distinct 
+
+     /* WE USER 영역 */
+     we.we_member_id
+     , wemember.created_at as we_cre_at
+     , case when wemember.join_status = 'RETIRE' or is_deleted = 1 then deleted_at end as we_leave_dt -- wemember.user는 삭제 후에도 데이터가 사라지지 않음
+          -- , null as sex
+          -- , null as age
+     , case when country.wv_created_at is null and country.ws_created_at is not null then country.ws_country
+               when country.ws_created_at is null and country.wv_created_at is not null then country.wv_country
+               when country.wv_created_at < country.ws_created_at then country.wv_country else country.ws_country end as ctry_code
+     , case when country.wv_created_at is null and country.ws_created_at is not null then country.ws_ip
+               when country.ws_created_at is null and country.ws_created_at is not null then country.wv_ip
+               when country.wv_created_at < country.ws_created_at then country.wv_ip else country.ws_ip end as ip
+          -- , case when ws_membership.we_member_id is not null then 1 else 0 end is_fc
+     , nvl(case when wv.id is not null and ws.user_id is null then 'WV' when wv.id is null and ws.user_id is not null then 'WS' when wv.id is not null and ws.user_id is not null then 'WE' end, we.join_service) as join_service
+     
+     /* WV USER 영역 */
+     , we.wv_user_id
+     , nvl(wv_set.language, we.wv_lang) as wv_lang
+     , nvl(wv.status, we.wv_status) as wv_status
+     , nvl(case when wv.id < 3000000 then cast('2019-06-01' as timestamp) else cast(wv.created_at as timestamp) end, we.wv_cre_dt) as wv_cre_dt
+     , case when we.wv_user_id < 3000000 then cast('2019-06-01' as timestamp) else cast(we.wv_first_cre_dt as timestamp) end as wv_first_cre_dt
+     , we.wv_join_dt as wv_join_dt
+     , case when we.wv_join_dt is null and we.wv_first_join_dt is not null then we.wv_first_join_dt 
+            when we.wv_join_dt is not null and we.wv_first_join_dt is null then we.wv_join_dt
+            when we.wv_join_dt is not null and we.wv_first_join_dt is not null then we.wv_first_join_dt
+       else null end as wv_first_join_dt
+     , nvl(wv.updated_at, we.wv_upd_dt) as wv_upd_dt
+     , case when wv.status = 'DEACTIVATED' then wv.updated_at 
+               when wv.status = 'RETIRE' then wv.updated_at - interval 3 months 
+               else null end as wv_deactivated_dt
+     , nvl(timestamp(from_unixtime(wv_last.last_accessed_at/1000)), we.wv_last_access_dt) as wv_last_access_dt
+     , nvl(leave.leaved_at, we.wv_leave_dt) as wv_leave_dt
+     , we.wv_trans_seq
+     , wv.we_member_user_key as wv_service_user_key
+
+     /* WS USER 영역 */
+     , we.ws_user_id as ws_user_id
+     , ws.language_code as ws_lang
+     , ws.status as ws_status
+     , case when ws.user_id < 2000000 then cast('2019-06-01' as timestamp) else cast(ws.created_at as timestamp) end as ws_cre_dt
+     , case when we.ws_user_id < 2000000 then cast('2019-06-01' as timestamp) else cast(we.ws_first_cre_dt as timestamp) end as ws_first_cre_dt
+     , we.ws_join_dt as ws_join_dt
+     , case when we.ws_join_dt is null and we.ws_first_join_dt is not null then we.ws_first_join_dt 
+               when we.ws_join_dt is not null and we.ws_first_join_dt is null then we.ws_join_dt
+               when we.ws_join_dt is not null and we.ws_first_join_dt is not null then we.ws_first_join_dt
+          else null end as ws_first_join_dt
+     , ws.updated_at as ws_upd_dt
+     , ws.deactivated_at as ws_deactivated_dt
+     , ws.last_accessed_at as ws_last_access_dt
+     , we.ws_trans_seq
+     , ws.we_member_user_key as ws_service_user_key
+
+     /* WA USER 영역 */
+     , wa.user_id as wa_user_id
+     , wa.language_code as wa_lang
+     , wa.status as wa_status
+     , wa.created_at as wa_cre_dt
+     , wa.deactivated_at as wa_deactivated_at
+
+     /* PH USER 영역 */
+     , ph.user_id as ph_user_id
+     , ph.ph_cre_dt
+     , ph.ph_first_join_dt
+     , ph.ph_last_access_at
+     , ph.ph_withdrawal_at
+
+     /* 기타 영역 */
+     , vlive.vlive_id as vlive_id
+     , vlive.vlive_linked_at as vlive_linked_at
+     , timestamp(current_timestamp() + interval '9' hour) as run_timestamp
+     , '{key}' as part_date
+
+
+     from we_user_mapping_table as we
+     left join (select * from we_mart.ods_wemember_user where part_date = '{key}') as wemember on we.we_member_id = wemember.id
+     left join (
+          select * except(created_at, updated_at, we_member_user_key, shop_user_key)
+          , created_at + interval '9' hour as created_at
+          , updated_at + interval '9' hour as updated_at 
+          , nvl(shop_user_key, we_member_user_key) as we_member_user_key  -- shop_user_key를 우선으로 사용
+          from we_mart.ods_wv_user 
+          where part_date = '{key}' 
+          and date(created_at) <= date('{key}')
+     ) as wv on we.wv_user_id = wv.id
+     left join (select * from we_mart.ods_ws_user where part_date = '{key}' and date(created_at) <= date('{key}')) as ws on we.ws_user_id = ws.user_id
+     left join wv_user_set as wv_set on wv.id = wv_set.user_id
+     left join first_country_ip as country on we.we_member_id = country.we_member_id 
+     left join wv_user_leave as leave on we.we_member_id = leave.we_member_id 
+     left join (select user_id, max(last_accessed_at) as last_accessed_at from we_mart.ods_wv_user_last_accessed_at where part_date = '{key}' group by 1) as wv_last on wv.id = wv_last.user_id
+     left join (select * from album.user where date(created_at) <= date('{key}')) as wa on we.we_member_id = wa.we_member_id
+     left join ph_user as ph on we.we_member_id = ph.account_id
+     left join vlive_link as vlive on we.wv_user_id = vlive.wv_user_id
+""""""
+)"
+15,md,,just_heading,#### Run
+16,md,,just_heading,###### daily run
+17,py,,code,"b = Dataflow(run_mode=run_mode, notifier=noti)
+print(option)
+b.run(dataframe=fin_df, table_info=table, option=option, buckets=['databricks'])"
+18,py,,code,"spark.sql(f'''
+OPTIMIZE we_mart.we_user
+where part_date = '{key}'
+ZORDER BY (we_member_id, we_cre_at)
+''')"
+19,md,,just_heading,#### APPENDIX
+20,md,,just_heading,###### create query
+21,py,,code,"sql = """"""
+create or replace table we_mart.we_user
+  (
+   we_member_id bigint comment '통합 계정인 wemember의 ID, 주요 키'
+   , we_cre_at timestamp comment '위멤버 계정이 처음 만들어진 시점'
+   , we_leave_dt timestamp comment '위멤버 계정 탈퇴 및 삭제 시점'
+   -- , sex string comment '유저의 성별'
+   -- , age string comment '유저의 나이(대)'
+   , ctry_code string comment '유저의 처음 가입 시점 국가 정보'
+   , ip string comment '유저의 처음 가입 시점 ip'
+   --, is_fc int comment '해당 유저가 해당 일자에 멤버쉽에 가입되어있는지 (1 or 0)'
+   , join_service string comment '해당 유저가 가입한 서비스 종류, 위버스/샵만 가입이면 wv/ws, 둘 모두 가입이면 we'
+   , wv_user_id bigint comment '위버스 user_id'
+   , wv_lang string comment '위버스 가입 시 설정한 언어 정보'
+   , wv_status string comment '위버스 계정 상태'
+   , wv_cre_dt timestamp comment '위버스 계정 가입 시점'
+   , wv_first_cre_dt timestamp comment '위버스 계정이 가장 먼저 만들어진 시점(재가입 불문, 2021-11-24일 부터 카운팅)'
+   , wv_join_dt timestamp comment '위버스 계정 가입 완료 시점'
+   , wv_first_join_dt timestamp comment '위버스 계정이 가장 먼저 가입 완료된 시점(재가입 불문, 2021-11-24일 부터 카운팅)'
+   , wv_upd_dt timestamp comment '위버스 계정 상태 업데이트 시점'
+   , wv_deactivated_dt timestamp comment '위버스 계정 비활성화 시점, 활성화일 경우 null'
+   , wv_last_access_dt timestamp comment '위버스 계정 별 마지막 접속 시점'
+   , wv_leave_dt timestamp comment '위버스 계정 회원 탈퇴 시점'
+   , wv_trans_seq int comment '위버스 계정의 재가입 횟수, 2021-11-24일 부터 카운팅하며 첫 가입이면 1'
+   , ws_user_id bigint comment '위버스샵 user_id'
+   , ws_lang string comment '위버스샵 가입 시 설정한 언어 정보'
+   , ws_status string comment '위버스샵 계정 상태'
+   , ws_cre_dt timestamp comment '위버스샵 계정 가입 시점'
+   , ws_first_cre_dt timestamp comment '위버스샵 계정이 가장 먼저 만들어진 시점(재가입 불문, 2021-11-24일 부터 카운팅)'
+   , ws_join_dt timestamp comment '위버스샵 계정 가입 완료 시점'
+   , ws_first_join_dt timestamp comment '위버스샵 계정이 가장 먼저 가입 완료된 시점(재가입 불문, 2021-11-24일 부터 카운팅)'
+   , ws_upd_dt timestamp comment '위버스샵 계정 상태 업데이트 시점'
+   , ws_deactivated_dt timestamp comment '위버스샵 계정 비활성화 시점, 활성화일 경우 null'
+   , ws_last_access_dt timestamp comment '위버스샵 계정 별 마지막 접속 시점'
+   , ws_trans_seq int comment '위버스샵 계정의 재가입 횟수, 2021-11-24일 부터 카운팅하며 첫 가입이면 1'
+   , wv_service_user_key string comment '위버스 service_user_key(24/07/02부터 위버스 <=> 위버스샵 간 통합)'
+   , wa_user_id bigint comment '위버스앨범 유저ID'
+   , wa_lang string comment '위버스앨범 설정언어'
+   , wa_status string comment '위버스앨범 회원상태'
+   , wa_cre_dt timestamp comment '위버스앨범 가입시간'
+   , wa_deactivated_at timestamp comment '위버스앨범 탈퇴시간'
+   , ph_user_id string comment '포닝 유저ID'
+   , ph_cre_dt timestamp comment '포닝 가입시간'
+   , ph_first_join_dt timestamp comment '포닝 최초가입시간'
+   , ph_last_access_at timestamp comment '포닝 마지막 접속시간'
+   , ph_withdrawal_at timestamp comment '포닝 탈퇴시간'
+   , ws_service_user_key string comment '위버스 샵 service_user_key(24/07/02부터 이 값으로 위버스 <=> 위버스샵 간 통합)'
+   , vlive_id long comment 'vlive user_id'
+   , vlive_linked_at timestamp comment 'vlive 연동시간'
+   , run_timestamp timestamp comment '데이터가 insert된 시간'
+   , part_date string comment '데이터가 입력된 날짜, string이지만 partition key로 사용'
+  )
+  using DELTA
+  partitioned by (part_date)
+  comment '위버스의 통합 계정인 wemember의 id를 기준으로 weverse와 weverseshop 서비스의 id, service_user_key와 맵핑하여 통합적으로 현황을 알 수 있는 테이블, 매일 모든 계정들의 정보가 업데이트되며 일자는 [part_date]로 확인 가능, 또한 [part_date]는 partition key로 사용된다.'
+""""""
+# spark.sql(sql)
+"

@@ -1,7 +1,10 @@
 from configurations import * 
 import requests
+import pandas as pd
 from datetime import datetime, timedelta
-
+import base64
+from typing import List
+import subprocess
 
 ## 각종 디렉토리 설정
 
@@ -11,18 +14,27 @@ class GithubConnector(object):
         self.repo_name = repo_name
         self.branch = branch
         self.owner = owner
+        self.base_url = "https://api.github.com"
         self.REPO_DIR = os.path.join(ROOT_DIR, self.repo_name)
         # Headers for authentication
         self.headers = {
             "Authorization": f"token {self.github_token}"
         }
+        
         ## 데이터브릭스 코드 레포지토리 main 업데이트
         os.chdir(self.REPO_DIR)
         os.system(f"git pull origin {self.branch}") 
         os.chdir(BASE_DIR)
     
     ## databricks용 Method 정의
-
+    def api_request(self, method, url, data=None):
+        response = requests.request(method, url, headers=self.headers, json=data)
+        if response.status_code not in [200, 201]:
+            print(f"Error: {response.status_code}")
+            print(response.text)
+            return None
+        return response.json()
+    
     def get_collaborator_list(self, permission = 'pull', page = 1):
         """
         Get a list of collaborators for the repository.
@@ -43,8 +55,9 @@ class GithubConnector(object):
             "permission": permission,
             "page": page
         }
-        response = requests.get(url, headers=self.headers, params=params)
-        people = response.json()    
+
+        return self.api_request("GET", url, data=params)
+           
 
     def get_update_files(self, since_date:str, time_delta_dates: int = 1, verbose: bool = False):
         """
@@ -71,13 +84,9 @@ class GithubConnector(object):
 
         # 기간 내 커밋 조회
         commits_url = f"https://api.github.com/repos/{self.owner}/{self.repo_name}/commits?sha={self.branch}&since={since_date_utc}&until={until_date_utc}"
+        commits = self.api_request("GET", url = commits_url)        
         
-
-        commit_response = requests.get(commits_url, headers=self.headers)
-        commit_response.raise_for_status()  # Raise an error for bad status codes
-
         # Commit들에게서 sha 추출
-        commits = commit_response.json()
         commit_shas = [c['sha'] for c in commits]
 
         # to return
@@ -139,40 +148,147 @@ class GithubConnector(object):
             "path": repo_file_path,
             "per_page": 100
         }
-        response = requests.get(url, headers=self.headers, params=params)
-        if response.status_code == 200:
-            df = pd.DataFrame(columns=['Commit', 'Author', 'Date', 'Message', 'URL'])
-            commits = response.json()
-            for commit in commits:
-                commit_sha = commit['sha']
-                author_name = commit['commit']['author']['name']
-                commit_date = commit['commit']['author']['date']
-                commit_message = commit['commit']['message']
-                commit_url = commit['html_url']
-                if verbose:
-                    print(f"Commit: {commit_sha}")
-                    print(f"Author: {author_name}")
-                    print(f"Date: {commit_date}")
-                    print(f"Message: {commit_message}")
-                    print("--------------------")
 
-                # Create a dictionary for easy DataFrame creation
-                commit_data = {
-                    'Commit': [commit_sha],
-                    'Author': [author_name],
-                    'Date': [commit_date],
-                    'Message': [commit_message],
-                    'URL': [commit_url]
-                }
+        df = pd.DataFrame(columns=['Commit', 'Author', 'Date', 'Message', 'URL'])
 
-                df = pd.concat([df, pd.DataFrame(commit_data)], ignore_index=True)
-            return df
-        else:
-            print(f"Error: {response.status_code}")
-            print(response.text)
-            return None
+        # response = requests.get(url, headers=self.headers, params=params)
         
+        response = requests.get(url, headers=self.headers, params=params)
+        if response.status_code != 200:
+            return None
+        commits = response.json()
+        for commit in commits:
+            commit_sha = commit['sha']
+            author_name = commit['commit']['author']['name']
+            commit_date = commit['commit']['author']['date']
+            commit_message = commit['commit']['message']
+            commit_url = commit['html_url']
+            if verbose:
+                print(f"Commit: {commit_sha}")
+                print(f"Author: {author_name}")
+                print(f"Date: {commit_date}")
+                print(f"Message: {commit_message}")
+                print("--------------------")
 
+            # Create a dictionary for easy DataFrame creation
+            commit_data = {
+                'Commit': [commit_sha],
+                'Author': [author_name],
+                'Date': [commit_date],
+                'Message': [commit_message],
+                'URL': [commit_url]
+            }
+
+            df = pd.concat([df, pd.DataFrame(commit_data)], ignore_index=True)
+        return df
+ 
+    def create_pull_request(self, branch_name:str, title:str, body:str, files:List[str], base_branch:str = 'main'):
+        """
+        Create a pull request with the specified changes.
+
+        Args:
+            branch_name (str): Name of the new branch to create
+            title (str): Title of the pull request
+            body (str): Description of the pull request
+            files (List[str]): List of files to be included in the pull request
+            base_branch (str, optional): Base branch for the pull request. Defaults to 'main'
+
+        Returns:
+            str: URL of the created pull request
+
+        Process:
+        1. Get the latest commit SHA of the base branch
+        2. Create a list of files to be changed
+        3. Create new blobs for each changed file
+        4. Create a new tree with the changed files
+        5. Create a new commit with the new tree
+        6. Create a new branch with the new commit
+        7. Create a pull request from the new branch to the base branch
+        """
+
+        # 1. 현재 main 브랜치의 최신 커밋 SHA 가져오기
+        main_branch = self.api_request("GET", f"{self.base_url}/repos/{self.owner}/{self.repo_name}/git/ref/heads/{base_branch}")
+        if not main_branch:
+            print("Failed to get main branch information")
+            exit(1)
+
+        base_sha = main_branch["object"]["sha"]
+
+        # 2. 변경된 파일 목록 (로컬 파일 경로와 GitHub 상의 경로)
+        # files = os.listdir(os.path.join(CODE_DIR, "specs"))
+        files_to_change = []
+        for f in files:
+            print(os.path.join(SPEC_REPO_DIR, f))
+            files_to_change.append((os.path.join(SPEC_REPO_DIR, f), f"src/data_analytics/specs/{f}"))
+
+        # 3. 각 파일에 대해 변경사항 생성
+        new_tree = []
+        for local_path, github_path in files_to_change:
+            # 파일 내용 읽기
+            with open(local_path, "rb") as file:
+                content = file.read()
+            
+            # Base64로 인코딩
+            content_encoded = base64.b64encode(content).decode("utf-8")
+            
+            # GitHub에 새 blob 생성
+            blob = self.api_request("POST", f"{self.base_url}/repos/{self.owner}/{self.repo_name}/git/blobs", {
+                "content": content_encoded,
+                "encoding": "base64"
+            })
+            if not blob:
+                print(f"Failed to create blob for {github_path}")
+                exit(1)
+            
+            # 새 트리에 추가
+            new_tree.append({
+                "path": github_path,
+                "mode": "100644",
+                "type": "blob",
+                "sha": blob["sha"]
+            })
+
+        # 4. 새 트리 생성
+        tree = self.api_request("POST", f"{self.base_url}/repos/{self.owner}/{self.repo_name}/git/trees", {
+            "base_tree": base_sha,
+            "tree": new_tree
+        })
+        if not tree:
+            print("Failed to create new tree")
+            exit(1)
+
+        # 5. 새 커밋 생성
+        commit = self.api_request("POST", f"{self.base_url}/repos/{self.owner}/{self.repo_name}/git/commits", {
+            "message": body,
+            "tree": tree["sha"],
+            "parents": [base_sha]
+        })
+        if not commit:
+            print("Failed to create new commit")
+            exit(1)
+
+        # 6. 새 브랜치 생성
+        new_branch = self.api_request("POST", f"{self.base_url}/repos/{self.owner}/{self.repo_name}/git/refs", {
+            "ref": f"refs/heads/{branch_name}",
+            "sha": commit["sha"]
+        })
+        if not new_branch:
+            print("Failed to create new branch")
+            exit(1)
+        # 7. PR 생성
+        pr_data = {
+            "title": title,
+            "body": body,
+            "head": branch_name,
+            "base": "main"
+        }
+        pr = self.api_request("POST", f"{self.base_url}/repos/{self.owner}/{self.repo_name}/pulls", pr_data)
+        if not pr:
+            print("Failed to create PR")
+            exit(1)
+
+        print(f"Successfully created PR: {pr['html_url']}")
+        return pr['html_url']
 
     ## dp-airflow용 Method 정의
     def get_dag_list(self):
@@ -222,7 +338,7 @@ class GithubConnector(object):
         url = "https://api.github.com/search/code"
         df = pd.DataFrame(columns=['table_name', 'file_path', 'score'])
         full_query = f'repo:{self.owner}/{self.repo_name} {target_table_name}'
-        # full_qeury = "ws_album_sale+in:file+language:py+repo:benxcorp/databricks"
+
         params = {
             "q": full_query,
             "per_page": 100
@@ -243,7 +359,7 @@ class GithubConnector(object):
         else:
             print(response.text)
             return None
-        
+
     @staticmethod
     def to_df(code_blocks, columns:dict = None):
         if columns is None:
@@ -254,6 +370,52 @@ class GithubConnector(object):
     def export(df, file_name = "tmp"):
         df.to_csv(os.path.join(DATA_DIR, file_name + ".csv"))
         return df
+    
+    def get_back_to_main_branch(self):
+        """
+        Switch back to the main branch and synchronize with the remote repository.
+
+        This function performs the following steps:
+        1. Changes the current directory to the repository directory.
+        2. Checks the current branch.
+        3. If not on the main branch, switches to the main branch.
+        4. Fetches the latest information from the remote repository.
+        5. Resets the local main branch to match the remote main branch.
+
+        If any error occurs during the process, it will be caught and printed.
+
+        메인 브랜치로 전환하고 원격 저장소와 동기화합니다.
+
+        이 함수는 다음 단계를 수행합니다:
+        1. 현재 디렉토리를 저장소 디렉토리로 변경합니다.
+        2. 현재 브랜치를 확인합니다.
+        3. 메인 브랜치가 아닌 경우, 메인 브랜치로 전환합니다.
+        4. 원격 저장소에서 최신 정보를 가져옵니다.
+        5. 로컬 메인 브랜치를 원격 메인 브랜치와 일치하도록 리셋합니다.
+
+        프로세스 중 오류가 발생하면 해당 오류를 캐치하여 출력합니다.
+        """
+
+        try:
+            os.chdir(self.REPO_DIR)
+            # 현재 브랜치 확인
+            current_branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], 
+                                            capture_output=True, text=True, check=True)       
+            if current_branch.stdout.strip() != "main":
+                # main 브랜치로 전환
+                subprocess.run(["git", "checkout", "main"], check=True)
+            # 원격 저장소에서 최신 정보 가져오기
+            subprocess.run(["git", "fetch", "origin"], check=True)
+            # 로컬 main 브랜치를 원격 main과 동기화
+            subprocess.run(["git", "reset", "--hard", "origin/main"], check=True)
+            print("Successfully synchronized with remote main branch.")
+        except subprocess.CalledProcessError as e:
+            print(f"An error occurred: {e}")
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+        finally:
+            os.chdir(BASE_DIR)
+    
     def switch_table_dir_to_url(self, table_dir):
         table_dir = table_dir.replace("\\", "/") # Windows path compatibility
         url = f"https://github.com/{self.owner}/{self.repo_name}/blob/{self.branch}/src/" + table_dir.split("/src/")[-1]
