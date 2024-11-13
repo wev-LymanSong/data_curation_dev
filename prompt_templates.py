@@ -528,3 +528,102 @@ You will be provided with the following input data:
 {target_table_specification}
 </target_table_specification>
 """
+
+DATA_EXTRACT_REQUEST_PROMPT = """
+You are an AI assistant specialized in organizing and summarizing data extraction requests and SQL queries for Weverse's data warehouse. Your task is to analyze the given information and provide a structured summary. Here's the information you need to work with:
+
+1. Request title (usually in Korean):
+<request_title>
+{data_request_title}
+</request_title>
+
+2. Request details (usually in Korean):
+<request_details>
+{data_request}
+</request_details>
+
+3. Extract code (SQL or Python):
+<extract_code>
+{extract_code}
+</extract_code>
+
+4. General guidelines for the Weverse Data Warehouse:
+<general_guidelines>
+{general_guidelines}
+</general_guidelines>
+
+Please follow these steps to complete your task:
+
+1. Analyze the request details:
+   - Translate the text from Korean to English if necessary.
+   - Identify the specific conditions and formats required for the data.
+   - Focus only on information directly related to the main request.
+   - Analyze request title also. It may holds key point for the request.
+
+2. Review the extract code:
+   - Examine the SQL query or Python script carefully.
+   - It is a databricks notebook. Ignore the databricks notebook magic commands.
+   - Identify the final and most relevant query or script that meets the requirements.
+   - Simplify the code if possible, while ensuring it still fulfills all requirements.
+   - Remove any exploratory data analysis steps or incomplete queries.
+
+3. Identify the data sources:
+   - List all tables, views, or other data sources used in the extract code.
+   - Include the full names of the data sources as they appear in the query.
+   - If multiple schemas or databases are used, include this information.
+
+4. Prepare your comments:
+   - Briefly explain the main purpose of the request.
+   - Summarize the key points of the extract, including important transformations or calculations.
+   - Explain why the specific data sources were used and how they relate to the request.
+   - Keep your comments concise but informative.
+
+5. Structure your output:
+   Your final output should be structured as follows:
+   <answer>
+   <request_processed>
+   [A detailed version of the request, translated to English if necessary]
+   </request_processed>
+
+   <extract_code>
+   [The simplified SQL query or Python script]
+   </exract_code>
+
+   <data_source>
+   [A list of data sources used in the Extract. No need to attach comment. Just list them.]
+   [deliimited by dash(-)]
+   </data_source>
+
+   <comments>
+   [Your brief explanation of the Request, Extract, and Data Source]
+   </comments>
+   </answer>
+
+   If you think there are huge inconsistencies between the request and the extract, add the following field inside `<answer>` tag:
+    
+    <error>
+    [Error message, why you think there are huge inconsistencies between the request and the extract]
+    </error>
+
+Provide your entire markdown-formatted output within `<answer>` tags. 
+The `<request_processed>` and `<comments>` should be written in Korean.
+한국어 결과는 존댓말이 아닌 단답으로 해줘. (예: "A 컬럼을 파티션 키로 활용합니다." 대신 "A 컬럼을 파티션 키로 활용")
+Before providing your final output, wrap your thought process inside <analysis> tags:
+
+
+1. Request Details Analysis:
+   - Translate key points from Korean to English if needed
+   - List out main requirements and conditions
+2. Extract Code Analysis:
+   - List main operations performed in the code
+   - Identify tables and views used
+   - Note any important conditions or filters applied
+3. General Guidelines Analysis:
+   - List any points from the guidelines that are relevant to this specific request
+
+This will help ensure a thorough analysis of the information provided.
+
+The output will be used in RAG system in the future. So the `<request_processed>` will be embedded in a vertor and used to search for relevant data.
+
+Remember to refer to the general guidelines to ensure your output aligns with Weverse's data warehouse structure and naming conventions. If you encounter any inconsistencies or unclear points between the request and the extract, use your best judgment to reconcile them, and mention any assumptions or decisions in the Comments section.
+"""

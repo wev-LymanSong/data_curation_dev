@@ -2,6 +2,8 @@ from databricks import sql
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.workspace import ExportFormat
 from configurations import *
+import re
+import os 
 
 ## 데이터브릭스 코드 레포지토리 파일 포맷 변수들
 HEADER_PATTERN = r"^#{1,6}\s.*$"
@@ -96,26 +98,35 @@ class DatabricksConnector(object):
                         # G.add_edge(parent_node_id, f'hop{hop + 1}_{i}')
                         self.get_upstream_table_list(batch_table = batch_table, hop = hop + 1, type=row['target_type'], target_table=row['source_table_full_name'], child_node_id= f"hop{hop + 1}_{i}")
     
-    def get_request_queries(self):
+    def get_request_queries(self, issue_space = 'DATA', start_index = 4000, end_index = 10000):
         error_files = []
-        pattern = r'DATA[-_]\d{4}'
-        for i in self.w.workspace.list(f'/data-analytics/100.[JIRA] Source sharing/', recursive=False):
-            dir_path = i.path
-            if dir_path.split("/")[-1] in ["DATA-4XXX", "DATA-5XXX", "DATA-6XXX"]:
-                print(f"Current Dir: {dir_path}")
-                
-                for notebook in self.w.workspace.list(path = dir_path, recursive=False):
-                    # print(notebook.path)
-                    notebook_title = notebook.path.split("/")[-1]
-                    notebook_lang = notebook.language.name
-                    issue_id = re.search(pattern, notebook_title).group().replace("_", "-")
-                    try:
-                        with self.w.workspace.download(notebook.path) as f:
-                            content = f.read()
-                            self.req_dict[issue_id] = (notebook_lang, content.decode('utf-8'))
-                    except:
-                        error_files.append(notebook.path.split("/")[-1]) # 노트북 제목을 포함한 경로상에 화투(, \x08)가 있는 제목은 에러가 남
-        return self.req_dict
+        # pattern = issue_space + r'[-_]\d{4}'
+
+        req_dirs = [i for i in self.w.workspace.list(f'/data-analytics/100.[JIRA] Source sharing/', recursive=True) \
+                            if bool(re.search(issue_space, i.path)) and i.object_type._value_ != 'DIRECTORY']
+        
+        for notebook in req_dirs:
+            issue_ids = re.findall(r'\b\d{4,5}\b', notebook.path)
+            notebook_title = notebook.path.split("/")[-1]
+            notebook_lang = notebook.language.name
+            
+            if len(issue_ids) == 1:
+                if int(issue_ids[0]) not in range(start_index, end_index + 1):
+                    continue
+            try:
+                with self.w.workspace.download(notebook.path) as f:
+                    print("Current file : ", notebook.path.split("/")[-1])
+                    content = f.read()
+                    for issue_id in issue_ids:
+                        if int(issue_id) in range(start_index, end_index + 1):
+                            self.req_dict[issue_space + "-" + issue_id] = (notebook_lang, content.decode('utf-8'))
+            
+            except:
+                error_files.append(notebook.path.split("/")[-1]) # 노트북 제목을 포함한 경로상에 화투(, \x08)가 있는 제목은 에러가 남
+            
+        
+        return dict(sorted(self.req_dict.items()))
+    
     
     @classmethod
     def get_formatted_blocks(cls, source_code_cells:str, source_code_lang:str = 'PYTHON', min_lines:int = None) -> dict:

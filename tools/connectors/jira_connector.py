@@ -1,7 +1,6 @@
 from configurations import *
 import requests
 
-
 class JiraConnector(object):
 
     def __init__(self):
